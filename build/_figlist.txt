@@ -1,0 +1,13 @@
+== data/figures ==
+FILE  figure_report.json  1837 bytes
+FILE  p0059_fig1.png  75230 bytes
+FILE  p0059_fig2.png  142195 bytes
+FILE  p0059_fig3.png  27814 bytes
+FILE  p0061_fig1.png  94683 bytes
+FILE  p0068_fig1.png  100621 bytes
+FILE  p0068_fig2.png  68514 bytes
+DIR   计算机网络（第8版）_谢希仁_上半  172 png
+DIR   计算机网络（第8版）_谢希仁_下半  121 png
+
+== data/ocr_cache ==
+计算机网络（第8版）_谢希仁_上半  29 json

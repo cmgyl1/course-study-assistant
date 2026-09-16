@@ -1,0 +1,57 @@
+语料: {'chunks': 2485, 'title_chunks': 504, 'passage_chunks': 1981, 'vocab': 10751, 'pages': '1–473', 'avg_len': 325}
+
+Q: 量子纠缠
+  tokens=['量子', '纠缠']
+  DF=[('量子', 3), ('纠缠', 1)]
+  status=ok rounds=1
+  sections=[]
+  msg=
+
+Q: 双绞线 薛定谔
+  tokens=['双绞线', '薛定谔']
+  DF=[('双绞线', 40), ('薛定谔', 0)]
+  status=ok rounds=0
+  sections=[]
+  msg=「薛定谔」在书中未出现，以下按其余关键词「双绞线」检索。
+
+Q: 为什么不直接用两次握手
+  tokens=['两次', '握手']
+  DF=[('两次', 13), ('握手', 36)]
+  status=ok rounds=1
+  sections=[]
+  msg=
+
+Q: 物理层
+  tokens=['物理层']
+  DF=[('物理层', 119)]
+  status=ok rounds=0
+  sections=['第2章物理层', '第2章物理层 > 2.1物理层的基本概念', '第2章物理层 > 2.3物理层下面的传输媒体']
+  msg=
+
+Q: OSI 七层模型
+  tokens=['osi', '七层', '模型']
+  DF=[('osi', 26), ('七层', 9), ('模型', 16)]
+  status=ok rounds=0
+  sections=['第2章物理层 > 2.2数据通信的基础知识 > 2.2.1数据通信系统的模型', '第2章 > 2.6 宽带接入技术 > 2.2.1 数据通信系统的模型', '第7章网络安全 > 7.1网络安全问题概述 > 7.1.3数据加密模型']
+  msg=
+
+Q: 三次握手
+  tokens=['三次', '握手']
+  DF=[('三次', 7), ('握手', 36)]
+  status=ok rounds=0
+  sections=[]
+  msg=
+
+Q: 拥塞控制
+  tokens=['拥塞', '控制']
+  DF=[('拥塞', 95), ('控制', 279)]
+  status=ok rounds=0
+  sections=['第5章 > 5.8 TCP 的拥塞控制', '第5章运输层 > 5.8TCP的拥塞控制', '5.8.2TCP的拥塞控制方法 > 5.9TCP的运输连接管理']
+  msg=
+
+Q: TCP 拥塞控制
+  tokens=['tcp', '拥塞', '控制']
+  DF=[('tcp', 400), ('拥塞', 95), ('控制', 279)]
+  status=ok rounds=0
+  sections=['第5章 > 5.8 TCP 的拥塞控制', '第5章运输层 > 5.8TCP的拥塞控制', '5.8.2TCP的拥塞控制方法 > 5.9TCP的运输连接管理']
+  msg=

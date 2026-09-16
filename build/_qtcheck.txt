@@ -1,0 +1,17 @@
+章节：计算机网络（第8版）_谢希仁_上半 > 第1章  概述
+块数 468 / 图 22
+HTML 长度 80606
+文档块数 518（QTextDocument）
+   page_0014_fig1.png  加载=True  1207x391
+   page_0014_fig2.png  加载=True  1207x331
+   page_0017_fig1.png  加载=True  1203x556
+   page_0020_fig1.png  加载=True  1207x415
+   page_0021_fig1.png  加载=True  1209x595
+   page_0022_fig1.png  加载=True  1201x478
+   page_0023_fig1.png  加载=True  1218x267
+   page_0023_fig2.png  加载=True  1218x306
+   page_0024_fig1.png  加载=True  1213x295
+   page_0025_fig1.png  加载=True  1204x588
+
+抽样 10 张，Qt 实际加载成功 10 张
+结论：✅ UI 里图片可正常显示
