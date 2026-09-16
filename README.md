@@ -45,6 +45,23 @@ PySide6 UI  →  src/services/（编排）  →  src/engine/（核心能力）  
 
 UI 与引擎解耦，引擎零 UI 依赖。详见 `docs/架构设计与长期规划.md`。
 
+### 界面一览（v0.5 实拍）
+
+> 下列截图由 `build/make_screenshots.py` **离屏渲染真实界面**自动生成，不是手绘 mockup。
+> 重新生成：`"$PY" build/make_screenshots.py`（全部）或 `… 首页 自学`（指定页）。
+
+| 首页 · KPI 概览 + 课程卡 | 自学 · 知识树 + 教材原文内嵌插图 |
+|---|---|
+| ![首页](docs/images/01-home.png) | ![自学](docs/images/03-study.png) |
+
+| 刷题 · 选择题作答 | 期末冲刺 · 复习提纲 |
+|---|---|
+| ![刷题](docs/images/04-practice.png) | ![期末冲刺](docs/images/06-finals.png) |
+
+| 资料管理 · 教材导入流水线 | 错题本 · 对错循环 |
+|---|---|
+| ![资料管理](docs/images/02-materials.png) | ![错题本](docs/images/05-wrongbook.png) |
+
 ---
 
 ## 2. 当前状态（实测基线）
@@ -71,7 +88,7 @@ UI 与引擎解耦，引擎零 UI 依赖。详见 `docs/架构设计与长期规
 | 章节阅读 | `QTextBrowser` 内嵌原文 + 插图 + 表格，**保序**呈现（图在原位，不堆章尾） |
 | 向量库 | 261 块（v0.4 重建后 0 页眉污染、0 残留） |
 | 测试 | `tests/` 10 个冒烟测试全绿，且**不污染真实数据** |
-| exe | `dist/大学生软件.exe` 为 **v0.4 时期产物，已过期**，需重打包 |
+| exe | `dist/大学生软件.exe` **v0.5 已重打包**（2026-09-16，149 MB）；离屏实测可正常启动、`crash.log` 为空 |
 
 ### 2.3 已知限制（不是 bug，别当 bug 修）
 
@@ -229,9 +246,11 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 ```
 大学生软件/
 ├── README.md                  ← 唯一入口（本文件）
+├── LICENSE                    ← MIT（仅覆盖代码；教材数据不在仓库内）
 ├── docs/                      ← 3 份活文档 + archive/ 归档
 │   ├── 工程操作规范.md
 │   ├── 架构设计与长期规划.md
+│   ├── images/                ← 界面截图（README §1 引用；由 build/make_screenshots.py 生成）
 │   └── archive/
 ├── src/
 │   ├── engine/                ← 核心能力（无 UI 依赖）
@@ -248,6 +267,7 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 │   └── rebuild_knowledge_base.py  check_knowledge_quality.py  import_textbooks.py …
 ├── build/                     ← 探针与验收脚本（一次性问题用一次，但先留着）
 │   ├── acceptance.py          ← 主验收
+│   ├── make_screenshots.py    ← 离屏生成 README 界面截图（→ docs/images/）
 │   ├── probe_boxes.py         ← 改版面判据的第一手证据
 │   └── archive_2026-09-11/    ← 早期一次性实验（已归档，勿删）
 ├── tests/                     ← 10 个冒烟测试，默认隔离、不写真实数据
@@ -268,13 +288,16 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 
 ## 7. 下一步（按优先级）
 
-1. **重打包 exe** —— `dist/大学生软件.exe` 是 v0.4 产物，未含 OCR 流水线与新版界面。命令见 §3.5。
-2. **实测新版 exe** —— 重点看：知识树章节、原文内嵌图是否在原位、表格是否正确渲染。
-3. **接入其余 3 门课** —— 走同一条流水线；扫描件质量不同可能需微调 `layout.py` 判据（改判据流程见规范 §7-P7）。
-4. **v0.6 语义检索升级（可选）** —— 引入 `bge-small-zh-v1.5`（~95MB）+ `onnxruntime`，与现有 BM25 做 RRF 混合检索。属增益项，不阻塞交付。详见架构文档附录 A。
+1. **人工点检新版 exe** —— `dist/大学生软件.exe` 已于 2026-09-16 重打包（v0.5），
+   离屏实测可启动；下一步是**肉眼验收**：知识树章节、原文内嵌图是否在原位、表格是否正确渲染。
+2. **接入其余 3 门课** —— 走同一条流水线；扫描件质量不同可能需微调 `layout.py` 判据（改判据流程见规范 §7-P7）。
+3. **v0.6 语义检索升级（可选）** —— 引入 `bge-small-zh-v1.5`（~95MB）+ `onnxruntime`，与现有 BM25 做 RRF 混合检索。属增益项，不阻塞交付。详见架构文档附录 A。
 
 > **已否决项不进路线图**：本地大模型方案（Ollama）已于 2026-09-16 否决，论证见架构文档附录 B —— **不要再提**。
 
 ---
 
 _本文档是项目唯一入口。状态变化时更新 §2 与 §7；新增文档时先读 §5 的归位规则。_
+
+**许可证**：程序本体采用 [MIT License](LICENSE)。仓库**不含**任何教材 PDF 与派生数据
+（OCR 文本 / 插图 / 向量库），那部分版权归原作者与出版方，请自备合法持有的教材后自行生成。

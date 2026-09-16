@@ -876,7 +876,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addSpacing(14)
         sidebar_layout.addWidget(self.nav)
 
-        sidebar_footer = QLabel("大学生软件 v0.3")
+        sidebar_footer = QLabel("大学生软件 v0.5")
         sidebar_footer.setObjectName("sidebarFooter")
         sidebar_layout.addWidget(sidebar_footer, 0, Qt.AlignHCenter)
         sidebar_layout.addStretch()

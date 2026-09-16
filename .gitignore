@@ -31,6 +31,7 @@
 # ---------------------------------------------------------------------
 /dist/
 /build/大学生软件/
+/build/PyInstaller_work/
 /build/__pycache__/
 *.spec
 *.pkg
