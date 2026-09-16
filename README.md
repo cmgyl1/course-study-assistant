@@ -169,6 +169,21 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
   --distpath dist --workpath build/PyInstaller_work --specpath build src/main.py
 ```
 
+### 3.6 推送代码（网络受限时的备用通道）
+
+`git push` 依赖 `github.com` 可达。若处于企业网络 / 代理白名单环境，
+典型报错是 `schannel: server closed abruptly` 或 `CONNECT tunnel failed, response 502`。
+此时仍可用 API 通道推送：
+
+```bash
+"$PY" tools/push_via_api.py --dry-run     # 先体检：核对 blob / tree / commit
+"$PY" tools/push_via_api.py               # 真正推送
+```
+
+它不走 git 传输协议，而是用 Git Data API 逐个建出 blob / tree / commit，
+**生成的 commit sha 与本地相同**，推完不分叉、不需要 force。
+凭据取自 git 凭据管理器，脚本不保存任何密钥。文件头注释有完整说明与边界。
+
 ---
 
 ## 4. 最常踩的三个坑（先看这里，能省几小时）
