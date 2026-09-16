@@ -56,6 +56,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 try:
     import requests
@@ -131,18 +132,52 @@ def read_entries() -> list[dict]:
 # --------------------------------------------------------------------------
 # 凭据
 # --------------------------------------------------------------------------
+# 依次尝试的凭据后端。None = 用 git 配置里的默认链，放最后兜底。
+# 为什么要显式列这几个：Git for Windows 默认 credential.helper=helper-selector，
+# 它首次使用时要弹 GUI 让用户挑后端；在无人值守 / 非交互会话里它会一直挂着，
+# 直到被 SIGTERM 杀掉 —— 于是整个推送在"取凭据"这一步就死了，且不报错。
+# 所以绕开 selector，直接问底层后端。
+CRED_HELPERS: tuple[str | None, ...] = ("wincred", "manager", None)
+
+
+def _helper_bin_dirs() -> list[str]:
+    """git 安装目录下可能放着 credential helper（wincred / manager）的 bin。"""
+    try:
+        out = subprocess.run(["git", "--exec-path"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=10,
+                             text=True).stdout.strip()
+    except Exception:                                        # noqa: BLE001
+        return []
+    if not out:
+        return []
+    p = Path(out)                      # …/mingw64/libexec/git-core
+    return [str(p), str(p.parent.parent / "bin"),
+            str(p.parent.parent / "mingw64" / "bin")]
+
+
 def read_token(host: str = "github.com") -> str:
     """从系统凭据管理器取 token，绝不打印。"""
-    p = subprocess.run(
-        ["git", "credential", "fill"],
-        input=f"protocol=https\nhost={host}\n\n".encode(),
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
-    for line in p.stdout.decode("utf-8", "replace").splitlines():
-        if line.startswith("password="):
-            return line[len("password="):].strip()
-    sys.exit("未能从 git 凭据管理器取到 token（请先执行 git push 一次以缓存凭据）")
+    payload = f"protocol=https\nhost={host}\n\n".encode()
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    dirs = _helper_bin_dirs()
+    if dirs:
+        env["PATH"] = os.pathsep.join(dirs + [env.get("PATH", "")])
+
+    for helper in CRED_HELPERS:
+        # 指定 helper 时必须先用空值清掉原列表，否则 helper-selector 仍挂在链上
+        args = (["-c", "credential.helper=", "-c", f"credential.helper={helper}"]
+                if helper else [])
+        try:
+            p = subprocess.run(["git", *args, "credential", "fill"], input=payload,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               env=env, timeout=15)
+        except subprocess.TimeoutExpired:
+            log(f"  凭据后端 {helper or '默认'} 超时，换下一个…")
+            continue
+        for line in p.stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("password="):
+                return line[len("password="):].strip()
+    sys.exit("未能从 git 凭据管理器取到 token（请先执行一次 git push 以缓存凭据）")
 
 
 def make_session(token: str) -> "requests.Session":
