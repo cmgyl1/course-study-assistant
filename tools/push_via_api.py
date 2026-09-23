@@ -187,6 +187,21 @@ def make_session(token: str) -> "requests.Session":
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     })
+    # 本机网络偶发抖动：实测 api.github.com 的根端点单次就要 8s+，
+    # 大 blob 的 base64 上传很容易撞上 requests 的 ReadTimeout（整次推送白跑）。
+    # 挂一层重试适配器：读超时/5xx 自动重试，不把抖动当成"推不上去"。
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=3, connect=3, read=3, status=3,
+        backoff_factor=1.5,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST", "PATCH", "PUT", "DELETE"}),
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_maxsize=16)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
     return s
 
 
