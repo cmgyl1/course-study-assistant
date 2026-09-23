@@ -10,7 +10,9 @@ from pathlib import Path
 
 def _find_project_root() -> Path:
     if getattr(sys, "frozen", False):  # PyInstaller 打包环境
-        exe_dir = Path(sys.executable).resolve().parent  # exe 在 dist/ 下
+        # exe 位置不固定：2026-09-23 起打包产物直接落在项目根（便于查找），
+        # 旧版落在 dist/ 下。两种布局都从 exe 所在目录逐级向上找 data/。
+        exe_dir = Path(sys.executable).resolve().parent
         for base in (exe_dir, exe_dir.parent, exe_dir.parent.parent,
                      exe_dir.parent.parent.parent):
             if (base / "data").is_dir():

@@ -3,6 +3,8 @@
 > 本地离线学习工作台：**扫描版教材 PDF → OCR → 版面还原 → 检索语料 → 桌面 App + 离线网页阅读器**。
 > 工作目录：`D:/atomcode/大学生软件/` · 版本：**v0.5**（文档流水线闭环）· 更新：2026-09-16
 
+> **打开软件**：双击项目根目录下的 `大学生软件.exe`（完整路径 `D:/atomcode/大学生软件/大学生软件.exe`）—— 它刻意与 `README.md`、`LICENSE` 放在同一层，不必进入任何子目录翻找。
+
 **这是本项目的唯一入口文档。** 看完这一页就能上手，需要细节再按 §5 索引跳转。
 
 > ℹ️ **从 GitHub 克隆下来的？先看这里。**
@@ -90,7 +92,7 @@ UI 与引擎解耦，引擎零 UI 依赖。详见 `docs/架构设计与长期规
 | 检索路径 | 自学页输入框 → `engine/retrieval` **BM25**，语料 **1698 块**，与离线阅读器**完全同源**（含拒答与"未出现词"提示）。首次提问前由后台线程预热索引（≈6s，查询 0.3ms） |
 | 向量库 | **已整体移除**（2026-09-23）—— `chromadb` 依赖、`knowledge_base.py`、`data/vector_store/`（261 块）、`tests/test_knowledge_base.py` 全部删除，全项目只剩 BM25 一条路。原数据备份在 `data/backup/2026-09-23-vector_store/` |
 | 测试 | `tests/` **9 个测试文件全绿**（`test_retrieval` 15 · `test_materials_service` 11 · `test_study_service` 9 · `test_practice_service` 8 · `test_dashboard_service` 5 + 冒烟），且**不污染真实数据**（测试教材走独立课程名 + `finally` 清理） |
-| exe | `dist/大学生软件.exe` **v0.5 已重打包**（2026-09-23，**105 MB** —— 去掉 chromadb 后比上一版小 44 MB）；离屏实测可启动、`crash.log` 空 |
+| exe | **`大学生软件.exe`（放在项目根目录，双击即用 —— 与 `README.md` 同级，无需进子目录找）** · v0.5 已重打包（2026-09-23，**105 MB** —— 去掉 chromadb 后比上一版小 44 MB）；离屏实测可启动、`crash.log` 空 |
 
 ### 2.3 已知限制（不是 bug，别当 bug 修）
 
@@ -185,9 +187,13 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 ```bash
 "$PY" -m PyInstaller --noconfirm --onefile --windowed --name 大学生软件 \
   --paths src --collect-all jieba \
-  --distpath dist --workpath build/PyInstaller_work --specpath build src/main.py
+  --distpath . --workpath build/PyInstaller_work --specpath build src/main.py
 ```
 
+> `--distpath .` 让产物直接落在**项目根目录**（`大学生软件.exe`），与 `README.md`、`LICENSE` 同级，
+> 打开项目文件夹第一眼就能看到，不必进 `dist/` 翻找；命令须在项目根执行。
+> 运行期 `crash.log` 由 `main.py` 写在 exe 旁（同样是项目根），两者均已排除入库。
+> `dist/` 现在只保留历史 `.bak` 版本。
 > 已去掉 `--collect-all chromadb`（2026-09-23 chroma 链路整体移除后不再需要），
 > 这是 exe 体积的主要来源之一。
 
@@ -295,7 +301,8 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 │   ├── reader.html              离线阅读器（单文件，与桌面端同引擎）
 │   ├── corpus_cache/            检索语料切块缓存（可选，由 tools/build_corpus.py 生成）
 │   └── backup/<日期>/           回滚点（保留 ≥30 天，不是垃圾）
-├── dist/                      ← 打包产物
+├── 大学生软件.exe             ← 打包产物本体，双击即用（刻意放在根目录，不必进 dist/ 翻找）
+├── dist/                      ← 历史 .bak 版本留档（新产物不再落这里）
 └── reserved/                  ← 预留模块位（答疑 / 课程同步 / 移动端）
 ```
 
@@ -303,7 +310,7 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 
 ## 7. 下一步（按优先级）
 
-1. **人工点检新版 exe** —— `dist/大学生软件.exe` 已于 2026-09-23 重打包（**105 MB**，含检索路径修复
+1. **人工点检新版 exe** —— 项目根目录下的 `大学生软件.exe` 已于 2026-09-23 重打包（**105 MB**，含检索路径修复
    与 chroma 拆除）。离屏实测可启动，下一步是**肉眼验收**：知识树章节、原文内嵌图是否在原位、
    表格是否正确渲染、**输入框提问是否与离线阅读器给出同样结果**。
 2. **接入其余 3 门课** —— 走同一条流水线；扫描件质量不同可能需微调 `layout.py` 判据（改判据流程见规范 §7-P7）。

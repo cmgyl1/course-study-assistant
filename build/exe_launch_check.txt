@@ -1,0 +1,9 @@
+﻿exe 路径: D:\atomcode\大学生软件\大学生软件.exe
+exe 存在: True
+exe 大小: 105 MB
+启动后 15s 进程存活: 是 (PID=2492,21940)
+常驻内存: 226.6 MB
+crash.log 大小: 0 字节
+--- crash.log 内容 ---
+根目录 crash.log 已出现: 是（说明 exe 旁写日志逻辑跟着走了）
+已结束测试进程
