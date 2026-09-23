@@ -8,12 +8,13 @@ UI 不再直接调 engine，而是 StudyPage → study_service.xxx → engine。
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from engine import study, textbook_reader as reader
 from .dto import (
     ChapterContent, ExplainResultData, KnowledgeNode, Result,
-    SectionBlock, SectionReading,
+    SectionBlock, SectionHit, SectionReading,
 )
 
 
@@ -21,7 +22,6 @@ from .dto import (
 
 def _node_sort_key(title: str) -> tuple:
     """按章节号排序（第 X 章 > 第 X.X 节 > 第 X.X.X 节）。"""
-    import re
     parts = re.findall(r"\d+", title)
     return tuple(int(p) for p in parts) if parts else (9999,)
 
@@ -154,6 +154,42 @@ def _esc(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# 命中词高亮的底色 —— 与 reader 的 `mark{background:#5a8dd6;color:#fff}` 同一个蓝
+_MARK_STYLE = "background-color:#5A8DD6;color:#ffffff"
+
+# 段落前页号徽章的样式 —— 对照 reader 的 `.pg`（小底、灰字、等宽数字）
+_PG_STYLE = "background-color:#1D222B;color:#8A94A6;font-size:11px"
+
+# 原文片段卡的预览长度 —— 与 reader 的 `c.x.slice(0,160)` 对齐
+PREVIEW_CHARS = 160
+
+
+def section_title(section_path: str) -> str:
+    """章节路径 → 短标题（最后一段）。
+
+    卡片主标题用短标题而不是整条路径：reader 的卡片标题就是节标题本身
+    （`S[si].title`），铺满整条"第5章 > 5.9 > 5.9.1"会把卡片挤成一行字。
+    整条路径仍然保留在 SectionHit.section_path / ChapterContent.section_path 里，
+    要对照时用悬浮提示看。
+    """
+    parts = [p.strip() for p in (section_path or "").split(" > ") if p.strip()]
+    return parts[-1] if parts else ""
+
+
+def preview_html(text: str, marks=(), limit: int = PREVIEW_CHARS) -> str:
+    """原文片段卡的预览 → HTML（命中词高亮 + 超长截断加省略号）。
+
+    截断规则与 reader 一致：**先按原始字符截断、再高亮** —— 反过来的话
+    高亮标签会被算进长度，两张卡的可见字数就对不上了。
+    """
+    keys = sorted({k for k in marks if len(k) > 1}, key=len, reverse=True)
+    raw = text or ""
+    body = _hl(raw[:limit], keys).replace("\n", " ")
+    if len(raw) > limit:
+        body += "…"
+    return body
+
+
 def _table_html(md_table: str) -> str:
     """Markdown 管道表格 → HTML 表格（教材里的对照表必须按表格看，否则一团糟）。"""
     rows: list[list[str]] = []
@@ -182,29 +218,63 @@ def _table_html(md_table: str) -> str:
     return "".join(out)
 
 
-def render_section_html(reading: SectionReading) -> str:
+def _hl(text: str, keys: list[str]) -> str:
+    """命中词高亮（对照 reader 的 `hl()`）。
+
+    **只高亮长度 > 1 的词** —— 与 reader 同一条规则：单字命中太宽泛，
+    把"的""层"这类高亮出来只会干扰阅读。长词优先，避免短词先吃掉长词的字符。
+    """
+    out = _esc(text)
+    if not keys:
+        return out
+    pat = "|".join(re.escape(k) for k in keys)
+    return re.sub(pat,
+                  lambda m: f'<span style="{_MARK_STYLE}">{m.group(0)}</span>',
+                  out, flags=re.IGNORECASE)
+
+
+def _pg_badge(page) -> str:
+    """段落 / 图题前的页号徽章 `P123`（对照 reader 的 `span.pg`）。没页码就不放。"""
+    if not page:
+        return ""
+    return f'<span style="{_PG_STYLE}">&nbsp;P{page}&nbsp;</span>&nbsp;'
+
+
+def render_section_html(reading: SectionReading, marks=()) -> str:
     """保序块 → HTML（供只读浏览器显示，插图按原位置内嵌）。
 
     渲染时**不做任何排序或分组** —— 顺序即 `reading.blocks` 的顺序，
     这正是"图和原文位置一致"的保证：块从 Markdown 里按原序读出，
     这里只是逐块转成标签，中间没有任何聚合步骤可以打乱它。
+
+    版式对齐离线阅读器 `data/reader.html` 的 `show()`：
+      - 标题分两档（h4 亮 16px / h5 灰 14.5px），**标题不带页码**；
+      - **每个段落前**放页号徽章，段首缩进 2em、两端对齐；
+      - 图题居中灰字，同样带页号徽章；
+      - 表格按表格渲染。
+
+    `marks` 是命中词（来自 `ExplainResultData.used_tokens`），给了就在段落里高亮。
+    注意：reader 的**阅读视图其实不高亮**（它的 `show()` 第一句就清空了 marks），
+    高亮只出现在检索结果卡片的预览里 —— 界面按同一行为调用即可。
     """
+    keys = sorted({k for k in marks if len(k) > 1}, key=len, reverse=True)
     out: list[str] = []
     for b in reading.blocks:
         if b.kind == "heading":
-            lv = min(max(b.level, 1) + 1, 5)
-            size = {2: "18px", 3: "16px", 4: "14px", 5: "13px"}.get(lv, "13px")
-            pg = (f'<span style="color:#8a94a6;font-size:11px;font-weight:normal">'
-                  f'  p{b.page}</span>') if b.page else ""
-            out.append(f'<p style="font-size:{size};font-weight:bold;color:#5A8DD6;'
-                       f'margin:20px 0 8px">{_esc(b.text)}{pg}</p>')
+            if (b.level or 9) <= 4:
+                style = ("font-size:16px;font-weight:bold;color:#cfe0f5;"
+                         "margin:26px 0 8px")
+            else:
+                style = ("font-size:14.5px;font-weight:bold;color:#93a0b4;"
+                         "margin:20px 0 6px")
+            out.append(f'<p style="{style}">{_esc(b.text)}</p>')
         elif b.kind == "figure":
             if not b.url:
                 continue
             uri = Path(b.url).as_uri()
-            # 图外面包一层 <a href="file://…">：桌面端把"点击"接管成弹窗放大
+            # 图外面包一层 <a href="file://…">：桌面端把"点击"接管成全屏遮罩放大
             # （教材里的协议帧图/电路图不放大看不清）。见 main.StudyPage._on_anchor_clicked。
-            out.append(f'<p style="text-align:center;margin:16px 0">'
+            out.append(f'<p style="text-align:center;margin:20px 0 24px">'
                        f'<a href="{uri}"><img src="{uri}" style="max-width:92%"></a></p>')
         elif b.kind == "table":
             html = _table_html(b.text)
@@ -214,9 +284,12 @@ def render_section_html(reading: SectionReading) -> str:
             body = _esc(b.text).replace("\n", "<br>")
             if b.is_caption:
                 out.append(f'<p style="text-align:center;color:#8a94a6;font-size:13px;'
-                           f'margin:6px 0 18px">{body}</p>')
+                           f'margin:6px 0 18px">{_pg_badge(b.page)}{body}</p>')
             else:
-                out.append(f'<p style="margin:8px 0;line-height:1.7">{body}</p>')
+                body = _hl(b.text, keys).replace("\n", "<br>")
+                out.append(f'<p style="margin:0 0 15px;line-height:1.9;'
+                           f'text-indent:2em;text-align:justify">'
+                           f'{_pg_badge(b.page)}{body}</p>')
     return "\n".join(out)
 
 
@@ -272,6 +345,23 @@ def explain_topic(query: str, course: str, top_k: int = 5) -> Result[ExplainResu
         related_sections=[s.get("section_path", "")
                           for s in result.get("sections", [])
                           if s.get("section_path")],
+        # 「命中的章节」卡片要的是标题 + 书名 + 页码 + 命中词数 ——
+        # 旧版只留了 section_path 字符串，UI 拿不到后三项，卡片做不出来。
+        section_hits=[
+            SectionHit(
+                section_path=s.get("section_path", ""),
+                title=section_title(s.get("section_path", "")),
+                doc_title=s.get("doc_title", ""),
+                page_no=s.get("page_no"),
+                level=s.get("level"),
+                score=s.get("score", 0.0),
+                n_hits=s.get("n_hits", 0),
+            )
+            for s in result.get("sections", [])
+            if s.get("section_path")
+        ],
+        # 命中词（高亮用）：与阅读器的 r.known 同一个集合
+        used_tokens=list(result.get("used_tokens", [])),
         missing_tokens=list(result.get("missing_tokens", [])),
         message=result.get("message", ""),
     )
@@ -290,10 +380,13 @@ def explain_topic(query: str, course: str, top_k: int = 5) -> Result[ExplainResu
 
 
 __all__ = [
+    "PREVIEW_CHARS",
     "get_course_tree",
     "get_section_content",
     "get_section_reading",
+    "preview_html",
     "render_section_html",
+    "section_title",
     "explain_topic",
     "warm_up",
 ]

@@ -369,7 +369,15 @@ class TitleIndex:
                 "level": int(c.get("level") or 9),
             })
 
-    def match(self, query_tokens: list[str], bm25: BM25, top_k: int = 5) -> list[tuple[int, float]]:
+    def match(self, query_tokens: list[str], bm25: BM25,
+              top_k: int = 5) -> list[tuple[int, float, int]]:
+        """返回 [(块下标, 标题命中分, 命中词数), …]，按命中词数 → 层级 → 得分排序。
+
+        第三个元素（命中词数）是给界面用的：离线阅读器的"命中章节"卡片右上角
+        要显示「命中 N 词」，而读取器的 titleTokens 与这里的 tokens 是同一份
+        分词结果，所以这个数在两处必然一致。**加性扩展**：调用方只有
+        `_one_pass`，排序与筛选逻辑一字未动。
+        """
         q = set(query_tokens)
         if not q:
             return []
@@ -386,7 +394,7 @@ class TitleIndex:
             scored.append((e["idx"], base, len(hit), e["level"]))
         # 命中词多优先 → 层级高（章优先）→ 得分高
         scored.sort(key=lambda x: (-x[2], x[3], -x[1]))
-        return [(idx, sc) for idx, sc, _h, _l in scored[:top_k]]
+        return [(idx, sc, h) for idx, sc, h, _l in scored[:top_k]]
 
 
 # ---------------------------------------------------------------- 检索主流程
@@ -445,7 +453,9 @@ def _one_pass(
         "source_file": chunks[i].get("source_file", ""),
         "level": chunks[i].get("level"),
         "score": round(s, 4),
-    } for i, s in title_hits]
+        # 标题里命中了几个查询词 —— 界面「命中 N 词」角标用（加性字段，不影响排序）
+        "n_hits": n,
+    } for i, s, n in title_hits]
 
     passages = [{
         "text": chunks[i]["text"],

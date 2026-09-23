@@ -8,6 +8,7 @@ from __future__ import annotations
 import html as _html
 import sys
 import threading
+from dataclasses import replace as _replace
 from pathlib import Path
 
 # --- 崩溃诊断钩子：PyInstaller windowed 下未捕获异常/原生崩溃默认静默，
@@ -48,7 +49,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QSpinBox, QListWidgetItem,
     QGroupBox, QFormLayout, QFrame, QSizePolicy, QDialog,
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QUrl
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QSize
 from PySide6.QtGui import QColor, QFont, QBrush, QCursor, QPalette, QPixmap
 
 from engine.config import ensure_data_dirs, COURSES
@@ -56,6 +57,26 @@ from engine import practice  # 仅用于 PracticeSession 类型注解
 from ui.style import STYLE, DARK_PALETTE
 from ui.animations import fade_in, pulse
 from services import materials_service, study_service, practice_service, dashboard_service
+
+# 自学页按离线阅读器砍掉了课程下拉框（reader 没有下拉），所以需要一个默认课程。
+# 首页课程卡点击可以带别的课程进来 —— 见 MainWindow._goto_page(name, course)。
+# 当前只有「计算机网络」跑完了整条流水线，其余 3 门接入后这里不必改。
+DEFAULT_COURSE = "计算机网络"
+
+
+def _book_label(book: str) -> str:
+    """教材名 → 左栏分组标题用的**短标签**。
+
+    文件名形如「计算机网络（第8版）_谢希仁_上半」，直接铺进 290px 的左栏会被截成
+    「计算机网络（第8版） 谢希…」—— 上册和下册看起来一模一样，分不出来。
+    reader 用一张 bookLabels 映射表解决，这里用同等效果的规则化短标签：
+    书名主体 + 末段（上/下册）。
+    """
+    parts = [p for p in (book or "").split("_") if p]
+    if len(parts) >= 2:
+        return f"{parts[0]} · {parts[-1]}"
+    return book or ""
+
 
 
 class BasePage(QWidget):
@@ -95,13 +116,21 @@ class _KpiCard(QFrame):
 
 
 class _CourseCard(QFrame):
-    """单课程卡片：课程名 + 教材块数 + 题库数。"""
+    """单课程卡片：课程名 + 教材块数 + 题库数。
 
-    def __init__(self, course_name: str) -> None:
+    可点击 —— 自学页按离线阅读器砍掉了课程下拉框，课程只能从这里带进去
+    （`MainWindow._goto_page("自学", course)`）。其余 3 门课接入后仍走这条入口。
+    """
+
+    def __init__(self, course_name: str, on_open=None) -> None:
         super().__init__()
         self.setObjectName("courseCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumHeight(96)
+        self.course_name = course_name
+        self._on_open = on_open
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(f"点击进入「{course_name}」自学页")
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
@@ -135,13 +164,19 @@ class _CourseCard(QFrame):
         bank_row.addStretch()
         v.addLayout(bank_row)
 
+    def mousePressEvent(self, event) -> None:
+        """整卡可点：点课程卡 = 进该课程的自学页。"""
+        if callable(self._on_open):
+            self._on_open(self.course_name)
+        super().mousePressEvent(event)
+
 
 class HomePage(BasePage):
     """欢迎主界面：欢迎语 + 快捷入口 + KPI 大数字块 + 4 列课程卡。"""
 
     def __init__(self, on_goto: callable | None = None) -> None:
         super().__init__()
-        self.on_goto = on_goto or (lambda name: None)
+        self.on_goto = on_goto or (lambda name, course=None: None)
         self.layout.setContentsMargins(32, 28, 32, 28)
         self.layout.setSpacing(18)
 
@@ -198,7 +233,7 @@ class HomePage(BasePage):
         course_grid.setSpacing(14)
         self.course_cards: dict[str, _CourseCard] = {}
         for idx, course in enumerate(courses):
-            card = _CourseCard(course)
+            card = _CourseCard(course, self._open_course)
             self.course_cards[course] = card
             row, col = divmod(idx, 4)
             course_grid.addWidget(card, row, col)
@@ -206,6 +241,14 @@ class HomePage(BasePage):
         course_grid.setColumnStretch(4, 1)
         self.layout.addLayout(course_grid)
         self.layout.addStretch()
+
+    def _open_course(self, course: str) -> None:
+        """点课程卡 → 进自学页并带上该课程。
+
+        这就是"自学页照搬 reader 砍掉课程下拉框"之后，其余 3 门课的低成本入口
+        —— 自学页自己不提供课程切换，但首页卡片能把它带进去。
+        """
+        self.on_goto("自学", course)
 
     def refresh(self) -> None:
         """刷新课程进度与统计（进入首页时调用）。"""
@@ -317,266 +360,582 @@ class MaterialsPage(BasePage):
             self.log(f"  - {name}")
 
 
+# ---------------- 自学页：卡片 / 卡片列表 / 全屏遮罩 ----------------
+
+class _ResultCard(QFrame):
+    """检索结果卡片（对照 reader 的 `.card`，自绘，不翻译 CSS）。
+
+    QTextBrowser 只认 Qt 富文本子集：`flex` / `position:fixed` 一律不支持，
+    所以卡片**不能**靠把 reader 的 CSS 搬进富文本来做，只能用
+    QListWidget + setItemWidget 拼真控件。本类就是那"一张卡"。
+
+    版式：右上角一个角标（章节卡=命中 N 词，片段卡=BM25 分数），
+    左侧主标题 + 元信息（书名 · 页码），片段卡多一行前 160 字预览（命中词高亮）。
+    """
+
+    def __init__(self, title: str, meta: str = "", badge: str = "",
+                 preview: str = "", tip: str = "", on_click=None) -> None:
+        super().__init__()
+        self.setObjectName("resultCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self._on_click = on_click
+        if tip:
+            self.setToolTip(tip)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 11, 14, 12)
+        v.setSpacing(3)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(10)
+        self.title_lab = QLabel(title)
+        self.title_lab.setObjectName("cardTitle")
+        self.title_lab.setWordWrap(True)
+        head.addWidget(self.title_lab, 1)
+        self.badge_lab = QLabel(badge)
+        self.badge_lab.setObjectName("cardBadge")
+        self.badge_lab.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        self.badge_lab.setVisible(bool(badge))
+        head.addWidget(self.badge_lab, 0)
+        v.addLayout(head)
+
+        # 三个标签**恒建**，空就隐藏 —— 验收脚本要直接读它们做断言，
+        # 条件创建会让断言脚本被迫去猜布局里有几个子控件。
+        self.meta_lab = QLabel(meta)
+        self.meta_lab.setObjectName("cardMeta")
+        self.meta_lab.setVisible(bool(meta))
+        v.addWidget(self.meta_lab)
+
+        self.preview_lab = QLabel(preview)
+        self.preview_lab.setObjectName("cardPreview")
+        self.preview_lab.setTextFormat(Qt.RichText)
+        self.preview_lab.setWordWrap(True)
+        self.preview_lab.setVisible(bool(preview))
+        v.addWidget(self.preview_lab)
+
+    def mousePressEvent(self, event) -> None:
+        """整卡可点（点标题、空白处都算）。子 QLabel 不收鼠标事件，会自动冒泡到这里。"""
+        if callable(self._on_click):
+            self._on_click()
+        super().mousePressEvent(event)
+
+
+class _CardList(QListWidget):
+    """检索结果卡片列表。
+
+    QListWidget 用 setItemWidget 时**不会**跟着 viewport 宽度重算 item 高度：
+    窗口一拉宽，卡片里的预览文字就被裁掉。所以每次 resize 补算一遍。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("resultList")
+        self.setSelectionMode(QListWidget.NoSelection)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.setSpacing(10)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self) -> None:
+        width = max(self.viewport().width() - 18, 160)
+        for i in range(self.count()):
+            item = self.item(i)
+            widget = self.itemWidget(item)
+            if widget is None:
+                continue
+            widget.setFixedWidth(width)
+            item.setSizeHint(QSize(width, widget.sizeHint().height()))
+
+
+class _Lightbox(QDialog):
+    """全屏遮罩放大（对照 reader 的 `#lb`：黑底、图最多占 96%、点任意处关、Esc 关）。
+
+    旧的实现弹一个带标题栏的 QDialog，必须用鼠标去点右上角的叉才能关 ——
+    reader 是"点哪都关、Esc 也关"。这里用无边框对话框 + 自身吃鼠标事件还原。
+    """
+
+    def __init__(self, parent, pixmap: QPixmap) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setModal(True)
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(0, 0, 0, 230))     # reader: rgba(0,0,0,.9)
+        self.setPalette(pal)
+        self.setCursor(Qt.PointingHandCursor)
+        # 盖住整个应用窗口（reader 的 #lb 是 position:fixed inset:0，即盖住视口）
+        win = parent.window() if parent is not None else None
+        if win is not None:
+            self.setGeometry(win.frameGeometry())
+            box = QSize(int(win.width() * 0.96), int(win.height() * 0.96))
+        else:
+            box = QSize(1229, 768)
+        if pixmap.width() > box.width() or pixmap.height() > box.height():
+            pixmap = pixmap.scaled(box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        canvas = QLabel()
+        canvas.setAlignment(Qt.AlignCenter)
+        # 让点击穿透到对话框本身 —— 否则点在图上是"点了个 QLabel"，遮罩不关
+        canvas.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        canvas.setPixmap(pixmap)
+        lay.addWidget(canvas)
+
+    def mousePressEvent(self, event) -> None:
+        self.accept()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+
 # ---------------- 自学页 ----------------
 
 class StudyPage(BasePage):
-    def __init__(self) -> None:
-        super().__init__()
-        title = QLabel("课前课后自学")
-        title.setObjectName("pageTitle")
-        self.layout.addWidget(title)
+    """课前课后自学 —— 界面与离线阅读器 `data/reader.html` 保持同构。
 
-        top = QHBoxLayout()
-        self.course_box = QComboBox()
-        self.course_box.addItems(list(COURSES.keys()))
-        self.refresh_btn = QPushButton("刷新知识树")
-        self.refresh_btn.clicked.connect(self.refresh_tree)
-        self.index_label = QLabel("")          # 检索索引构建状态，见 _restart_warm
-        self.index_label.setObjectName("indexState")
-        top.addWidget(QLabel("课程："))
-        top.addWidget(self.course_box)
-        top.addWidget(self.refresh_btn)
-        top.addWidget(self.index_label)
-        top.addStretch()
-        self.layout.addLayout(top)
+    版式（与 reader 一致）：
+        顶部 header 横向条：标题 + 检索框 + 检索按钮 + 提示
+        主体左右两栏：左 = 章节树（290px，书名分组 + 章/节/小节），
+                      右 = 正文（点章节）或检索结果卡片（提问后）
+
+    刻意**不含**这三样（reader 没有）：课程下拉框、📌 知识点叶子、索引预热状态标签。
+    课程改由首页课程卡带入（`MainWindow._goto_page(name, course)`）。
+    渲染层的能力一个都没删：`get_course_tree()` 照旧返回 concepts，
+    `warm_up()` 照旧被调用，只是不再显示。
+    """
+
+    TREE_W = 290          # 左栏宽度，对齐 reader 的 aside{width:290px}
+
+    def __init__(self, course: str = DEFAULT_COURSE) -> None:
+        super().__init__()
+        self._course = course
+        self._marks: list[str] = []
+        self._warm_state = "idle"
+        self._path_index: dict[tuple[str, str], QTreeWidgetItem] = {}
+        self.layout.setContentsMargins(20, 16, 20, 16)
+        self.layout.setSpacing(12)
+
+        # ===== 顶部 header 横向条（reader: header{display:flex}）=====
+        header = QHBoxLayout()
+        header.setSpacing(14)
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("studyTitle")
+        self.title_label.setTextFormat(Qt.RichText)
+        header.addWidget(self.title_label)
+        self.query_edit = QLineEdit()
+        self.query_edit.setObjectName("studyQuery")
+        self.query_edit.setPlaceholderText(
+            "输入知识点，如：物理层 / 什么是物理层 / CSMA/CD")
+        self.query_edit.setMaximumWidth(560)      # reader: #q{max-width:560px}
+        self.query_edit.returnPressed.connect(self.ask)
+        header.addWidget(self.query_edit, 1)
+        self.ask_btn = QPushButton("检索")
+        self.ask_btn.clicked.connect(self.ask)
+        header.addWidget(self.ask_btn)
+        self.hint_label = QLabel("")
+        self.hint_label.setObjectName("studyHint")
+        header.addWidget(self.hint_label, 2)
+        self.layout.addLayout(header)
+
+        # ===== 主体：左栏章节树 + 右栏（结果卡片 / 正文）=====
+        body = QHBoxLayout()
+        body.setSpacing(16)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("教材知识树")
+        self.tree.setObjectName("studyTree")
+        self.tree.setHeaderHidden(True)           # reader 的左栏没有表头
         self.tree.setMinimumHeight(150)
+        self.tree.setFixedWidth(self.TREE_W)
         self.tree.itemClicked.connect(self.on_tree_click)
-        self.layout.addWidget(self.tree, 2)
+        body.addWidget(self.tree)
 
-        grp = QGroupBox("知识点讲解（教材原文检索 · BM25）")
-        form = QHBoxLayout(grp)
-        self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText("输入知识点，如：物理层 比特流 / TCP 三次握手")
-        self.ask_btn = QPushButton("讲解")
-        self.ask_btn.clicked.connect(self.ask)
-        form.addWidget(self.query_edit)
-        form.addWidget(self.ask_btn)
-        self.layout.addWidget(grp)
-
-        # 自学页要同时显示原文段落与插图 —— 用只读 HTML 浏览器（支持本地图片）
+        # 右栏两种形态，共用一个位置：卡片列表 / 正文浏览器
+        self.result_list = _CardList()
         self.log_box = QTextBrowser()
         self.log_box.setObjectName("logBox")
         self.log_box.setOpenExternalLinks(False)
         # 插图在 HTML 里是 <a href="file:///…"><img …></a>，点击由我们自己接管成
-        # 弹窗放大。必须关掉 Qt 的默认链接处理，否则它会去"用系统程序打开这张图"。
+        # 全屏遮罩放大。必须关掉 Qt 的默认链接处理，否则它会去"用系统程序打开这张图"。
         self.log_box.setOpenLinks(False)
         self.log_box.anchorClicked.connect(self._on_anchor_clicked)
         self.log_box.setMinimumHeight(120)
-        self.layout.addWidget(self.log_box, 1)
+        self.right = QStackedWidget()
+        self.right.addWidget(self.result_list)
+        self.right.addWidget(self.log_box)
+        body.addWidget(self.right, 1)
+        self.layout.addLayout(body, 1)
 
         # 检索索引预热：建 BM25 索引约 6s / 1698 块，而查询只要 0.3ms —— 不预热的
         # 话第一次提问会卡住界面 6 秒。放到后台线程建，主线程只轮询状态。
-        self._warm_state = "idle"
-        self._warm_course = ""
         self._warm_poll = QTimer(self)
         self._warm_poll.setInterval(400)
         self._warm_poll.timeout.connect(self._on_warm_tick)
-        self.course_box.currentIndexChanged.connect(self._restart_warm)
+        self.set_course(course)
+
+    # ---------------- 课程切换 ----------------
+
+    def set_course(self, course: str) -> None:
+        """切换课程：标题 / 章节树 / 索引预热 / 首页态，一次全换。"""
+        if course:
+            self._course = course
+        self.title_label.setText(
+            f'{self._course}　<span style="color:#93A0B4;font-size:12px">'
+            f'教材原文阅读器</span>')
+        self.refresh_tree()
+        self.show_home()
         self._restart_warm()
 
     # ---------------- 检索索引预热 ----------------
 
     def _restart_warm(self) -> None:
-        """切换课程后重新预热。
+        """启动后台预热。
 
-        注意：**必须在主线程读 course_box** —— 跨线程读 Qt 控件是不安全的，
-        所以这里先把课程名取出来，再交给后台线程。
+        自学页按 reader 去掉了课程下拉框，预热**只能靠这里显式触发** ——
+        旧版挂在 `course_box.currentIndexChanged` 上，删掉下拉后会永远不预热，
+        表现为"第一次提问卡 6 秒"。课程是普通字符串，跨线程读是安全的。
         """
-        self._warm_course = self.course_box.currentText()
         self._warm_state = "idle"
-        self.index_label.setText("检索索引构建中…")
         threading.Thread(target=self._warm_worker, daemon=True).start()
         self._warm_poll.start()
 
     def _warm_worker(self) -> None:
         """后台建索引。**这里绝不能碰任何 Qt 控件**（跨线程访问会崩）。"""
         try:
-            ok = study_service.warm_up(self._warm_course)
+            ok = study_service.warm_up(self._course)
             self._warm_state = "ready" if ok else "no_corpus"
         except Exception as e:      # 预热失败要让用户看见，不静默吞掉
             self._warm_state = f"failed:{type(e).__name__}: {e}"
 
     def _on_warm_tick(self) -> None:
-        """主线程轮询：把后台状态反映到 self.index_label。"""
+        """主线程轮询：预热**没成功**才吭声。
+
+        reader 没有"索引状态"这个标签，成功就不该多一行字；但失败和"没教材"
+        必须如实显示 —— 否则用户只会觉得"什么都查不到"却不知道原因。
+        """
         if self._warm_state == "idle":
             return
         self._warm_poll.stop()
-        state = self._warm_state
-        if state == "ready":
-            self.index_label.setText("检索索引就绪")
-        elif state == "no_corpus":
-            self.index_label.setText("该课程暂无教材")
+        if self._warm_state == "ready":
+            return
+        if self._warm_state == "no_corpus":
+            self._show_notice("该课程暂无教材，请先在「资料管理」导入教材。")
         else:
-            self.index_label.setText(f"索引构建失败：{state[len('failed:'):]}")
+            self._show_notice(
+                f"检索索引构建失败：{self._warm_state[len('failed:'):]}", "#e06c6c")
 
     def refresh_tree(self) -> None:
         self.tree.clear()
-        r = study_service.get_course_tree(self.course_box.currentText())
+        self._path_index.clear()
+        r = study_service.get_course_tree(self._course)
         if not r.success:
-            self.log(f"❌ {r.message}")
+            self._show_notice(f"❌ {r.message}", "#e06c6c")
             return
         if not r.data:
-            self.log(r.message)
+            self._show_notice(r.message)
             return
         for root_node in r.data:
-            root = QTreeWidgetItem([f"📚 {root_node.book}"])
-            root.setForeground(0, QBrush(QColor("#5A8DD6")))
-            f = QFont()
-            f.setBold(True)
-            f.setPointSize(13)
-            root.setFont(0, f)
-            self._add_nodes(root, root_node)
+            # 书名分组标题（reader: aside .book{color:var(--gold)}）——
+            # 它只是分组标签，不响应点击，所以设成不可选。
+            # 显示用短标签，**真实书名存在 UserRole 里**：拼章节路径、建反查表都得用真名。
+            root = QTreeWidgetItem([_book_label(root_node.book)])
+            root.setData(0, Qt.UserRole, root_node.book)
+            root.setForeground(0, QBrush(QColor("#E0B266")))
+            root_font = QFont()
+            root_font.setBold(True)
+            root_font.setPointSize(13)
+            root.setFont(0, root_font)
+            root.setFlags(root.flags() & ~Qt.ItemIsSelectable)
+            for ch in root_node.children:
+                self._add_nodes(root, ch, 1)
             self.tree.addTopLevelItem(root)
+        self._build_path_index()
         self.tree.expandAll()
 
-    def _add_nodes(self, parent: QTreeWidgetItem, node) -> None:
-        """递归添加 DTO 节点 → QTreeWidgetItem（知识点小字用金色）。"""
+    def _add_nodes(self, parent: QTreeWidgetItem, node, depth: int = 1) -> None:
+        """递归添加 DTO 节点 → QTreeWidgetItem。
+
+        配色对齐 reader 的 aside：一级（章）用亮色，二级往下用灰。
+        旧版还会在这里挂 📌 知识点叶子，reader 没有，已去掉 ——
+        但 `get_course_tree()` 仍然返回 concepts，能力没删，只是不再显示。
+        """
         from services.dto import KnowledgeNode as KN
         item = QTreeWidgetItem([node.title])
+        item.setForeground(0, QBrush(QColor("#E6EAF2" if depth <= 1 else "#93A0B4")))
+        if depth > 1:
+            node_font = QFont()
+            node_font.setPointSize(12)
+            item.setFont(0, node_font)
         parent.addChild(item)
-        # 章节标题样式
-        item.setForeground(0, QBrush(QColor("#A8B0BB")))
-        if isinstance(node, KN) and node.children:
+        if isinstance(node, KN):
             for c in node.children:
-                self._add_nodes(item, c)
-        if isinstance(node, KN) and node.concepts:
-            for concept in node.concepts[:8]:
-                leaf = QTreeWidgetItem([f"📌 {concept}"])
-                leaf.setForeground(0, QBrush(QColor("#E0B266")))
-                leaf_font = QFont()
-                leaf_font.setPointSize(11)
-                leaf.setFont(0, leaf_font)
-                item.addChild(leaf)
+                self._add_nodes(item, c, depth + 1)
+
+    # ---------------- 「节路径 → 树节点」反查 ----------------
+
+    def _build_path_index(self) -> None:
+        """建反查表，供"点卡片 → 左栏回选"用（reader 的 show(si) 会切 .on）。
+
+        **不能按整条路径精确匹配**：语料里的 `section_path` 与树上的标题在顶层
+        章名上可能不一致 —— 实测教材里是「第5章」，而树上是「第5章运输层」。
+        所以按"从末级往上的所有后缀"建索引，查的时候优先匹配最长的后缀。
+        """
+        self._path_index.clear()
+
+        def walk(item: QTreeWidgetItem, titles: list[str], book: str) -> None:
+            chain = titles + [item.text(0).strip()]
+            for k in range(1, len(chain) + 1):
+                self._path_index.setdefault((book, " > ".join(chain[-k:])), item)
+            for j in range(item.childCount()):
+                walk(item.child(j), chain, book)
+
+        for i in range(self.tree.topLevelItemCount()):
+            book_item = self.tree.topLevelItem(i)
+            walk(book_item, [], self._book_stem(book_item))
+
+    def _book_stem(self, book_item: QTreeWidgetItem) -> str:
+        """取分组节点代表的**真实教材名**（显示的是短标签，别拿 text(0) 当书名）。"""
+        return book_item.data(0, Qt.UserRole) or book_item.text(0).strip()
+
+    def _find_tree_item(self, doc_title: str, section_path: str) -> QTreeWidgetItem | None:
+        """按（书名, 节路径）找树节点；对不上就返回 None（不抛异常）。"""
+        parts = [p.strip() for p in (section_path or "").split(" > ") if p.strip()]
+        if not parts:
+            return None
+        books = [doc_title] if doc_title else []
+        books += [self._book_stem(self.tree.topLevelItem(i))
+                  for i in range(self.tree.topLevelItemCount())]
+        for k in range(len(parts), 0, -1):              # 后缀由长到短
+            key = " > ".join(parts[-k:])
+            for book in books:
+                item = self._path_index.get((book, key))
+                if item is not None:
+                    return item
+        return None
+
+    def _select_tree_item(self, doc_title: str, section_path: str) -> bool:
+        """把左栏对应项标记为选中并滚到可见。对不上就**不动**（正文照跳）。"""
+        item = self._find_tree_item(doc_title, section_path)
+        if item is None:
+            return False
+        parent = item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent = parent.parent()
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+        return True
 
     def on_tree_click(self, item: QTreeWidgetItem) -> None:
-        """点击树节点：知识点 → 检索讲解；章节 → 取章节正文。"""
-        text = item.text(0)
-        course = self.course_box.currentText()
-        if text.startswith("📌"):
-            query = text[2:].strip()
-            self.query_edit.setText(query)
-            self.ask()
+        """点树节点 → 读该节保序原文（reader 的 show(si)）。"""
+        if item.parent() is None:      # 书名分组只是标签（reader 里同样不可点）
             return
-        # 章节节点 → 拼出完整路径
         parts = []
         node = item
         while node is not None:
-            t = node.text(0)
-            if not t.startswith("📌"):
-                if t.startswith("📚"):
-                    t = t[2:].strip()
-                parts.insert(0, t)
+            # 顶层分组显示的是短标签，拼路径必须换回真实书名，否则 find_book 找不到书
+            text = self._book_stem(node) if node.parent() is None else node.text(0).strip()
+            if text:
+                parts.insert(0, text)
             node = node.parent()
-        path = " > ".join(parts)
-        # 读"保序原文"：标题/段落/插图按原书顺序返回，图落在图题之上 ——
-        # 不走检索排序（那会只取 top-3 并按相关度重排，位置就全乱了）。
-        r = study_service.get_section_reading(path, course)
-        self.log_box.clear()
-        if not r.success or r.data is None:
-            self.log_box.setPlainText(f"❌ {r.message}")
-            return
-        reading = r.data
-        head = (f"【{path}】  {len(reading.blocks)} 块 / {reading.n_figures} 图"
-                f"　—　{reading.book}")
-        self.log_box.setHtml(
-            f'<p style="color:#8a94a6;font-size:12px;margin:0 0 10px">{head}</p>'
-            + study_service.render_section_html(reading)
-        )
-        self.log_box.verticalScrollBar().setValue(0)
+        self._show_reading(" > ".join(parts))
+
+    # ---------------- 检索 ----------------
 
     def ask(self) -> None:
+        """检索入口（reader 的 doSearch()）。
+
+        top_k 传 10 再各切一段：reader 是「标题 6 / 片段 10」，而引擎默认 5 ——
+        不传 10 的话片段卡只有 5 张，看着就比 reader 少一半。
+        """
         query = self.query_edit.text().strip()
         if not query:
+            self.show_home()
             return
-        r = study_service.explain_topic(query, self.course_box.currentText(), top_k=5)
-        self.log_box.clear()
+        r = study_service.explain_topic(query, self._course, top_k=10)
         if not r.success or r.data is None:
-            self.log_box.setHtml(self._notice(f"❌ {r.message}", "#e06c6c"))
+            self._show_notice(f"❌ {r.message}", "#e06c6c")
             return
-        self.log_box.setHtml(self._render_answer(r.data))
+        data = r.data
+        if data.status in ("not_found", "no_corpus", "empty_query"):
+            self._show_not_found(data)
+            return
+        self._fill_results(data)
+
+    def _fill_results(self, data) -> None:
+        """检索结果 → 卡片列表（对照 reader 的 doSearch()）。"""
+        marks = list(data.used_tokens)
+        hits = list(data.section_hits)[:6]        # reader: hits.slice(0,6)
+        rows = list(data.evidence)[:10]           # reader: rows 已是 10 条
+        self._marks = marks
+
+        self.result_list.clear()
+        if hits:
+            self._add_group("命中的章节")
+            for h in hits:
+                self._add_card(_ResultCard(
+                    title=h.title or study_service.section_title(h.section_path),
+                    meta=" · ".join(x for x in (
+                        h.doc_title,
+                        f"第 {h.page_no} 页" if h.page_no else "") if x),
+                    badge=f"命中 {h.n_hits} 词",
+                    tip=h.section_path,
+                    on_click=lambda h=h: self._jump_card(h.doc_title, h.section_path),
+                ))
+        if rows:
+            self._add_group("原文片段")
+            for ev in rows:
+                self._add_card(_ResultCard(
+                    title=study_service.section_title(ev.section_path),
+                    meta=f"第 {ev.page_no} 页" if ev.page_no else "",
+                    badge=f"{ev.score:.3f}",
+                    preview=study_service.preview_html(ev.content, marks),
+                    tip=ev.section_path,
+                    on_click=lambda ev=ev: self._jump_card(ev.doc_title, ev.section_path),
+                ))
+
+        # 一条都没命中：如实说"没检索到"，不摆空列表
+        if not hits and not rows:
+            self._show_notice("未检索到原文段落。")
+            return
+
+        self.right.setCurrentWidget(self.result_list)
+        self.result_list.scrollToTop()
+        self.result_list._relayout()
+        hint = f"标题命中 {len(hits)} · 原文片段 {len(rows)}"
+        if data.missing_tokens:
+            hint = (f"「{'、'.join(data.missing_tokens)}」未出现，按其余关键词检索 · "
+                    + hint)
+        self.hint_label.setText(hint)
+
+    def _add_group(self, text: str) -> None:
+        """结果区的小标题（reader 的 `<h4>命中的章节 / 原文片段</h4>`）。"""
+        lab = QLabel(text)
+        lab.setObjectName("resultGroup")
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemIsEnabled)           # 可显示但不可选中、不可点
+        item.setSizeHint(lab.sizeHint())
+        self.result_list.addItem(item)
+        self.result_list.setItemWidget(item, lab)
+
+    def _add_card(self, card: _ResultCard) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemIsEnabled)
+        self.result_list.addItem(item)
+        self.result_list.setItemWidget(item, card)
+
+    def _jump_card(self, doc_title: str, section_path: str) -> None:
+        """点卡片 → 跳该节原文，并把左栏对应项标记为选中（reader 的 show(si)）。"""
+        full = f"{doc_title} > {section_path}" if doc_title else section_path
+        self._show_reading(full, doc_title=doc_title, select=True)
+
+    # ---------------- 右栏的三种形态 ----------------
+
+    def show_home(self) -> None:
+        """进入自学页 / 清空输入框时的首页态（reader 的 showHome()）。"""
+        self._marks = []
+        self.hint_label.setText("")
+        self.log_box.setHtml(
+            '<p style="font-size:22px;font-weight:bold;color:#E6EAF2;'
+            'margin:0 0 12px;padding-bottom:10px;border-bottom:1px solid #2A313D">'
+            f'{_html.escape(self._course)}</p>'
+            '<p style="margin:0;line-height:1.9;text-indent:2em;text-align:justify">'
+            '左栏点章节看该节<b>原文</b>：插图内嵌在它原来的位置（点击放大），'
+            '表格按表格显示 —— 块的顺序就是原书的顺序，没有做任何重排。'
+            '顶部输入框按知识点检索：先命中标题，标题不中再给原文段落；'
+            '整本书都没有的词会直接说明“未找到”，不做猜测性作答。</p>')
+        self.right.setCurrentWidget(self.log_box)
+
+    def _show_reading(self, section_path: str, doc_title: str = "",
+                      marks=(), select: bool = True) -> None:
+        """渲染某节保序原文（reader 的 show(si)）。
+
+        走 `get_section_reading`（保序原文），**不是** `get_section_content`
+        （BM25 top-3 按相关度重排）—— 后者会把图和正文的顺序打乱。
+        """
+        r = study_service.get_section_reading(section_path, self._course)
+        if not r.success or r.data is None:
+            self._show_notice(f"❌ {r.message}", "#e06c6c")
+            return
+        reading = r.data
+        title = study_service.section_title(reading.section_path or section_path)
+        # 面包屑的页码取"该节标题自己的页"，与 reader 的 s.page 一致
+        sec_page = reading.blocks[0].page if reading.blocks else None
+        blocks = list(reading.blocks)
+        # get_section_blocks 从命中的那条标题开始返回，所以首块就是该节自己的标题；
+        # 标题马上由下面的 h2 呈现，留着会重复一行（reader 的节内块不含节标题）。
+        if (title and blocks and blocks[0].kind == "heading"
+                and blocks[0].text.strip() == title):
+            blocks = blocks[1:]
+        reading = _replace(reading, blocks=blocks)
+
+        crumb = " · ".join(x for x in (
+            reading.book, f"第 {sec_page} 页" if sec_page else "") if x)
+        head = (
+            f'<div style="color:#93A0B4;font-size:12.5px;margin:0 0 16px">'
+            f'{_html.escape(crumb)}</div>'
+            '<p style="font-size:22px;font-weight:bold;color:#E6EAF2;'
+            'margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #2A313D">'
+            f'{_html.escape(title or reading.book)}</p>')
+        self.hint_label.setText("")
+        self.result_list.clear()      # 右栏换成正文了，结果卡片不再保留
+        self.log_box.setHtml(head + study_service.render_section_html(reading, marks))
         self.log_box.verticalScrollBar().setValue(0)
+        self.right.setCurrentWidget(self.log_box)
+        if select:
+            self._select_tree_item(doc_title,
+                                   reading.section_path or section_path)
+
+    def _show_notice(self, text: str, color: str = "#e0b266") -> None:
+        """在正文区显示一段提示，**不显示任何段落**。"""
+        self.hint_label.setText("")
+        self.result_list.clear()      # 与 _show_reading / _show_not_found 同理：
+        self.log_box.setHtml(         # 右栏换了内容，旧卡片不能留在隐藏层里
+            f'<p style="margin:24px 0;color:{color};font-size:14px;line-height:1.7">'
+            f'{_html.escape(text)}</p>')
+        self.right.setCurrentWidget(self.log_box)
+
+    def _show_not_found(self, data) -> None:
+        """书里没有这个词 —— 如实说没有，**一个段落都不给**。
+
+        这是 reader 与软件的共同硬规则：旧版无论问什么都返回 top-5，
+        用户会以为书里讲过。这里连"依据 1/2/3"的骨架都不建立。
+        """
+        msg = (data.message or "书中未找到相关内容。").rstrip("。")
+        self.hint_label.setText(msg + "。")
+        self.result_list.clear()      # 拒答时结果区必须是空的（不留上一次的卡片）
+        self.log_box.setHtml(
+            '<p style="font-size:22px;font-weight:bold;color:#E6EAF2;'
+            'margin:0 0 12px;padding-bottom:10px;border-bottom:2px solid #2A313D">'
+            '未找到</p>'
+            '<p style="margin:0;line-height:1.9;text-indent:2em;text-align:justify">'
+            f'{_html.escape(msg)}，不做猜测性作答。</p>')
+        self.right.setCurrentWidget(self.log_box)
+
+    # ---------------- 插图放大 ----------------
+
+    def _make_lightbox(self, image_path: str) -> _Lightbox | None:
+        """建遮罩（不 exec）—— 拆出来是为了让验收脚本能驱动它开合。"""
+        pix = QPixmap(image_path)
+        if pix.isNull():
+            return None
+        return _Lightbox(self, pix)
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
-        """点插图 → 弹窗放大（教材里的协议帧图、电路图不放大根本看不清）。"""
+        """点插图 → 全屏遮罩放大（教材里的协议帧图、电路图不放大根本看不清）。"""
         if url.scheme() != "file":
             return
-        pix = QPixmap(url.toLocalFile())
-        if pix.isNull():
+        box = self._make_lightbox(url.toLocalFile())
+        if box is None:
             return
-        screen = self.screen()
-        avail = screen.availableGeometry() if screen is not None else None
-        max_w = int((avail.width() if avail else 1280) * 0.8)
-        max_h = int((avail.height() if avail else 800) * 0.8)
-        if pix.width() > max_w or pix.height() > max_h:
-            pix = pix.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        dlg = QDialog(self)
-        dlg.setWindowTitle("插图预览")
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(8, 8, 8, 8)
-        canvas = QLabel()
-        canvas.setPixmap(pix)
-        lay.addWidget(canvas)
-        dlg.exec()
-
-    @staticmethod
-    def _notice(text: str, color: str = "#e0b266") -> str:
-        return (f'<p style="margin:12px 0;color:{color};font-size:14px;line-height:1.7">'
-                f'{_html.escape(text)}</p>')
-
-    def _render_answer(self, data) -> str:
-        """检索结果 → HTML。
-
-        三条硬规则（每一条都对应旧版的一个坑）：
-          1. status=not_found 时**只显示"没找到"**、不显示任何段落 ——
-             旧版无论问什么都返回 top-5，用户会以为书里讲过；
-          2. 原文段落**不截断**（教材一段平均 ~350 字，旧版截到 300 等于每段都缺尾）；
-          3. 每条依据带书名 / 章节路径 / 页码，便于对照纸质书。
-        """
-        head = ('<p style="color:#8a94a6;font-size:12px;margin:0 0 10px">问题：'
-                f'{_html.escape(data.query)}</p>')
-
-        if data.status in ("not_found", "no_corpus", "empty_query"):
-            tip = data.message or "书中未找到相关内容。"
-            return (head
-                    + self._notice(f"🔍 {tip}")
-                    + '<p style="color:#8a94a6;font-size:12px;line-height:1.7">'
-                      '教材里确实没有讲这个概念。可以换用教材里的术语再问一次，'
-                      '或先在左侧知识树里定位相关章节读原文。</p>')
-
-        parts = [head]
-        if data.missing_tokens:
-            parts.append(self._notice(
-                f"⚠️ 「{'、'.join(data.missing_tokens)}」在书中未出现，"
-                "以下按其余关键词检索。"))
-        if not data.evidence:
-            parts.append(self._notice("未检索到原文段落。"))
-        for i, ev in enumerate(data.evidence, 1):
-            body = _html.escape(ev.content).replace(chr(10), "<br>")
-            src = " · ".join(x for x in (ev.doc_title,
-                                         f"p{ev.page_no}" if ev.page_no else "") if x)
-            parts.append(
-                f'<p style="margin:14px 0 4px;color:#5A8DD6;font-size:13px">依据 {i}'
-                f'　<span style="color:#8a94a6;font-size:12px">'
-                f'{_html.escape(ev.section_path)}</span>'
-                f'<span style="color:#7c8698;font-size:11px">　{_html.escape(src)}</span>'
-                '</p>'
-                f'<p style="margin:0;line-height:1.8">{body}</p>')
-        if data.related_sections:
-            items = "".join(f'<li style="margin:2px 0">{_html.escape(s)}</li>'
-                            for s in data.related_sections)
-            parts.append(
-                '<p style="margin:16px 0 4px;color:#5A8DD6;font-size:13px">相关章节</p>'
-                '<ul style="margin:0;padding-left:22px;color:#A8B0BB;font-size:12px">'
-                f'{items}</ul>')
-        if data.ai_available and data.answer:
-            parts.append('<p style="margin:16px 0 4px;color:#5A8DD6;font-size:13px">'
-                         'AI 讲解</p>'
-                         '<p style="margin:0;line-height:1.8">'
-                         f'{_html.escape(data.answer)}</p>')
-        return "".join(parts)
+        box.exec()
 
 
 # ---------------- 刷题页 ----------------
@@ -1059,9 +1418,18 @@ class MainWindow(QMainWindow):
 
     # ---- 页面快捷跳转（首页按钮用） ----
 
-    def _goto_page(self, name: str) -> None:
-        if name in self.pages:
-            self.nav.setCurrentRow(list(self.pages.keys()).index(name))
+    def _goto_page(self, name: str, course: str | None = None) -> None:
+        """页面快捷跳转（首页按钮 / 课程卡用）。
+
+        `course` 非空时顺带把它带进目标页 —— 自学页没有课程下拉框，
+        课程只能这样传进去（页面上要提供 `set_course` 才生效）。
+        """
+        if name not in self.pages:
+            return
+        page = self.pages[name]
+        if course and hasattr(page, "set_course"):
+            page.set_course(course)
+        self.nav.setCurrentRow(list(self.pages.keys()).index(name))
 
     # ---- 展开 / 收起 ----
 

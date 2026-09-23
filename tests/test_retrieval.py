@@ -75,6 +75,26 @@ def test_topic_word_hits_its_chapter():
     assert any("物理层" in p for p in paths), f"命中章节里没有「物理层」: {paths}"
 
 
+def test_title_hit_carries_hit_count():
+    """命中章节必须带 `n_hits`（标题里命中了几个查询词）—— 界面「命中 N 词」角标用它。
+
+    这是给引擎加的**加性字段**：只多一个键，排序与筛选逻辑一字未动。
+    这条断言是回归锁 —— 少了它，日后有人重排 `TitleIndex.match()` 的返回值时，
+    界面角标会**静默**变成「命中 0 词」（UI 有默认值兜底，不会报错）。
+    """
+    r = _retriever()
+    if r is None:
+        return
+    res = r.search("物理层", top_k=5)
+    assert res["status"] == "ok", res
+    assert res["sections"], "「物理层」应有标题命中"
+    for s in res["sections"]:
+        assert isinstance(s.get("n_hits"), int), f"缺 n_hits: {s.keys()}"
+        assert s["n_hits"] >= 1, f"命中章节的 n_hits 至少为 1: {s}"
+    # 命中词数不能超过查询词数
+    assert max(s["n_hits"] for s in res["sections"]) <= len(set(res["tokens"]))
+
+
 def test_three_way_handshake_lands_on_transport_chapter():
     """教材用的是 RFC 译名"**三报文**握手"，"三次握手"只在注脚里出现过一次 ——
     所以这条要看**原文段落的章节归属**，不能看标题命中（标题里根本没有"握手"）。

@@ -251,11 +251,13 @@ def get_course_count() -> dict[str, int]:
 def explain_topic(query: str, course: str = "", top_k: int = 5) -> dict:
     """基于教材原文检索讲解知识点 —— BM25 词法链路，与离线阅读器同一套。
 
-    返回：{query, status, tokens, evidence, sections, answer, ai_available,
-          missing_tokens, message}
+    返回：{query, status, tokens, used_tokens, evidence, sections, answer,
+          ai_available, missing_tokens, message}
     - status ∈ {"ok", "not_found", "empty_query", "no_corpus"}。
       **not_found 必须被 UI 如实展示** —— 书里没有的概念就说没有，不能像旧路
       那样不管问什么都返回 top-5（用户会以为书里讲过）。
+    - used_tokens：真正参与检索的词（= tokens 去掉 missing_tokens）。界面拿它做
+      命中词高亮，与离线阅读器的 `r.known` 完全对应。
     - missing_tokens：提问里有、但全库都没出现过的词（如「薛定谔」），
       用于提示"已按其余关键词检索"。
     - ai_available=False 表示当前是"检索原文"模式（AI 讲解为预留能力）。
@@ -264,7 +266,7 @@ def explain_topic(query: str, course: str = "", top_k: int = 5) -> dict:
     if retriever is None:
         return {
             "query": query, "status": "no_corpus", "tokens": [],
-            "evidence": [], "sections": [], "answer": "",
+            "used_tokens": [], "evidence": [], "sections": [], "answer": "",
             "ai_available": False, "missing_tokens": [],
             "message": "该课程暂无教材，请先在「资料管理」导入教材。",
         }
@@ -288,6 +290,7 @@ def explain_topic(query: str, course: str = "", top_k: int = 5) -> dict:
         "query": query,
         "status": res.get("status", "ok"),
         "tokens": res.get("tokens", []),
+        "used_tokens": res.get("used_tokens", []),
         "evidence": evidence,
         "sections": res.get("sections", []),
         "answer": answer,

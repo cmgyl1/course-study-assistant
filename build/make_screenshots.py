@@ -134,10 +134,9 @@ def main() -> int:
             if name == "首页":
                 page.refresh()
             elif name == "自学":
-                page.course_box.setCurrentText(COURSE)
-                page.refresh_tree()
-                # 树占 2/3 高度会把原文挤没，截图时压扁它，让"内嵌插图原文"露出来
-                page.tree.setMaximumHeight(170)
+                # 自学页已按离线阅读器重排：没有课程下拉框，课程由 set_course 带入；
+                # 章节树是固定的左栏（不再需要"压扁高度"这种摆拍操作）。
+                page.set_course(COURSE)
                 _fill_study_reading(app, page)
             elif name == "刷题":
                 page.course_box.setCurrentText(COURSE)
@@ -173,10 +172,11 @@ def main() -> int:
 
 
 def _fill_study_reading(app: QApplication, page) -> None:
-    """在自学页灌入"第一个含插图的章节"，复刻 on_tree_click 的渲染分支。
+    """在自学页灌入"第一个含插图的章节"，走页面的**真实渲染路径**。
 
-    不直接调 on_tree_click，是因为它需要一个真实的 QTreeWidgetItem；
-    这里直接走 service 层，效果等价且不依赖树的展开状态。
+    以前这里是照着 on_tree_click 的分支手写一遍 HTML；现在页面自己提供了
+    `_show_reading()`（点章节树走的就是它），直接调它即可 ——
+    截图与用户真实看到的东西不会再有第二套版本。
     """
     from services import study_service as ss
 
@@ -188,27 +188,8 @@ def _fill_study_reading(app: QApplication, page) -> None:
         path = "%s > %s" % (book.book, ch.title)
         r = ss.get_section_reading(path, COURSE)
         if r.success and r.data and r.data.n_figures:
-            reading = r.data
-            head = ("【%s】  %d 块 / %d 图　—　%s"
-                    % (path, len(reading.blocks), reading.n_figures, reading.book))
-            page.log_box.setHtml(
-                '<p style="color:#8a94a6;font-size:12px;margin:0 0 10px">%s</p>%s'
-                % (head, ss.render_section_html(reading)))
-            page.log_box.verticalScrollBar().setValue(0)
-            # 同步在知识树里高亮该章节
-            _select_tree_item(page, ch.title)
+            page._show_reading(path, select=True)
             break
-
-
-def _select_tree_item(page, title: str) -> None:
-    root = page.tree.topLevelItem(0)
-    if root is None:
-        return
-    for i in range(root.childCount()):
-        item = root.child(i)
-        if item.text(0) == title:
-            page.tree.setCurrentItem(item)
-            return
 
 
 if __name__ == "__main__":

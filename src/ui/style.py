@@ -412,11 +412,85 @@ QLabel#statusWarn {{
     color: {GOLD};
     font-size: 13px;
 }}
-/* ===== 检索索引构建状态（自学页，随后台预热线程更新） ===== */
-QLabel#indexState {{
+/* ===== 自学页（v0.5.1：版式对齐离线阅读器 data/reader.html） =====
+   reader 的 token 与本文件同族（--bg:#0f1115 / --panel:#161a21 /
+   --accent:#5a8dd6 / --gold:#e0b266），这里直接复用现有变量，不另起一套配色。 */
+QLabel#studyTitle {{
+    color: {TEXT};
+    font-size: 16px;
+    font-weight: 600;
+    padding-right: 6px;
+}}
+QLineEdit#studyQuery {{
+    background: {BG_DEEP};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 9px 14px;
+}}
+QLineEdit#studyQuery:focus {{
+    border-color: {PRIMARY};
+    background: {BG_DEEP};
+}}
+QLabel#studyHint {{
     color: {TEXT_MUTED};
     font-size: 12px;
-    padding-left: 10px;
+}}
+/* 左栏章节树（reader 的 aside：书名金色分组 + 章亮 / 节灰） */
+QTreeWidget#studyTree {{
+    background: {BG_DEEP};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 8px 6px;
+}}
+QTreeWidget#studyTree::item {{
+    padding: 4px 8px;
+    border-radius: 6px;
+}}
+QTreeWidget#studyTree::item:selected {{
+    background: {PRIMARY};
+    color: #FFFFFF;
+}}
+/* 结果区：卡片直接浮在背景上，所以列表本身不能有卡片底与边框 */
+QListWidget#resultList {{
+    background: transparent;
+    border: none;
+    padding: 0;
+}}
+QListWidget#resultList::item {{
+    padding: 0;
+    border-radius: 10px;
+}}
+QLabel#resultGroup {{
+    color: #CFE0F5;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 10px 2px 2px 2px;
+}}
+/* 单张结果卡（reader 的 .card） */
+QFrame#resultCard {{
+    background: {CARD};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+}}
+QFrame#resultCard:hover {{
+    border-color: {PRIMARY};
+}}
+QLabel#cardTitle {{
+    color: #CFE0F5;
+    font-size: 14px;
+    font-weight: 600;
+}}
+QLabel#cardMeta {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+QLabel#cardPreview {{
+    color: #C9D2DE;
+    font-size: 13px;
+}}
+QLabel#cardBadge {{
+    color: {GOLD};
+    font-size: 12px;
 }}
 """
 

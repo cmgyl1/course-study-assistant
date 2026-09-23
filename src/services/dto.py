@@ -78,6 +78,24 @@ class ChapterContent:
 
 
 @dataclass(frozen=True)
+class SectionHit:
+    """检索命中的**章节**（标题索引命中，不是原文段落）。
+
+    对应离线阅读器「命中的章节」卡片：标题 + `书名 · 第 N 页` + 右上角`命中 N 词`。
+    与 `ChapterContent`（原文片段）是两回事，别混用：
+      - SectionHit 是"入口"，点它去读该节**保序原文**；
+      - ChapterContent 是"证据"，本身带着正文文本与 BM25 分数。
+    """
+    section_path: str
+    title: str = ""                # 该节短标题（路径最后一段），卡片主标题用
+    doc_title: str = ""
+    page_no: int | None = None
+    level: int | None = None
+    score: float = 0.0
+    n_hits: int = 0                # 标题里命中了几个查询词（卡片角标）
+
+
+@dataclass(frozen=True)
 class SectionBlock:
     """教材正文里的一个**保序**块：heading / para / figure。
 
@@ -119,6 +137,8 @@ class ExplainResultData:
     ai_available: bool = False
     status: str = "ok"
     related_sections: list[str] = field(default_factory=list)
+    section_hits: list[SectionHit] = field(default_factory=list)
+    used_tokens: list[str] = field(default_factory=list)
     missing_tokens: list[str] = field(default_factory=list)
     message: str = ""
 
