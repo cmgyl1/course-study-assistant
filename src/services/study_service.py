@@ -1,16 +1,16 @@
 """study_service —— 自学页业务逻辑：知识树 / 章节正文 / 知识点讲解。
 
-UI 不再直接调 kb / study，而是 StudyPage → study_service.xxx → engine。
+UI 不再直接调 engine，而是 StudyPage → study_service.xxx → engine。
 
 章节内容有**两条路**，用途不同：
   - get_section_reading：按原书顺序返回整节的标题/段落/插图（**阅读**场景）；
-  - get_section_content：RAG 检索 top-k 相关片段（**问答**场景）。
+  - get_section_content：BM25 检索 top-k 相关片段（**问答**场景）。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from engine import knowledge_base as kb, study, textbook_reader as reader
+from engine import study, textbook_reader as reader
 from .dto import (
     ChapterContent, ExplainResultData, KnowledgeNode, Result,
     SectionBlock, SectionReading,
@@ -45,7 +45,7 @@ def get_course_tree(course: str) -> Result[list[KnowledgeNode]]:
     except Exception as e:
         return Result.fail(str(e), "❌ 知识树加载失败")
     if not trees:
-        return Result.ok([], f"该课程暂无教材入库（请先在「资料管理」导入）")
+        return Result.ok([], f"该课程暂无教材（请先在「资料管理」导入）")
 
     # ⚠ engine.get_course_tree 返回的是 [{"book": 书名, "tree": [顶层节点…]}] ——
     #   一层**包壳**；而 DTO 要求列表里每个元素就是节点（有 title/children）。
@@ -79,13 +79,16 @@ def _sort_recursive(node: KnowledgeNode) -> None:
 # =================== 章节正文 ====================
 
 def get_section_content(section_path: str, course: str) -> Result[list[ChapterContent]]:
-    """获取某章节的正文片段（RAG 检索 top_k=3）。"""
+    """获取某章节的正文片段（top-k，按相关度排序）。
+
+    走 BM25 词法检索（与自学页提问同一套引擎）。原实现走 chroma，已随该依赖移除。
+    """
     if not section_path:
         return Result.fail("章节路径为空")
     if not course:
         return Result.fail("课程未选择")
     try:
-        chunks = kb.get_section_content(section_path, course, top_k=3)
+        chunks = study.search_section(section_path, course, top_k=3)
     except Exception as e:
         return Result.fail(str(e), "❌ 章节正文加载失败")
     items = [
@@ -93,6 +96,8 @@ def get_section_content(section_path: str, course: str) -> Result[list[ChapterCo
             section_path=c.get("section_path", section_path),
             doc_title=c.get("doc_title", ""),
             content=c.get("content", ""),
+            page_no=c.get("page_no"),
+            score=c.get("score", 0.0),
         )
         for c in chunks
     ]
@@ -107,7 +112,7 @@ def get_section_reading(section_path: str, course: str) -> Result[SectionReading
     """取某章节的**保序原文**（含插图，位置与原书一致）。
 
     与 `get_section_content` 的分工：
-      - `get_section_content` 走 RAG 检索，只取相关 top-k 片段、按相关度排序（问答）；
+      - `get_section_content` 走 BM25 检索，只取相关 top-k 片段、按相关度排序（问答）；
       - 本方法按原书顺序返回整节的 heading / 段落 / 插图（阅读）——
         图片落在它对应的图题之上，**不会**被聚合成"正文一堆、图堆在末尾"。
     """
@@ -197,8 +202,10 @@ def render_section_html(reading: SectionReading) -> str:
             if not b.url:
                 continue
             uri = Path(b.url).as_uri()
+            # 图外面包一层 <a href="file://…">：桌面端把"点击"接管成弹窗放大
+            # （教材里的协议帧图/电路图不放大看不清）。见 main.StudyPage._on_anchor_clicked。
             out.append(f'<p style="text-align:center;margin:16px 0">'
-                       f'<img src="{uri}" style="max-width:92%"></p>')
+                       f'<a href="{uri}"><img src="{uri}" style="max-width:92%"></a></p>')
         elif b.kind == "table":
             html = _table_html(b.text)
             if html:
@@ -215,8 +222,28 @@ def render_section_html(reading: SectionReading) -> str:
 
 # =================== 知识点讲解 ====================
 
+# =================== 检索索引预热 ====================
+
+def warm_up(course: str) -> bool:
+    """预热该课程的检索索引，返回是否可用。
+
+    建 BM25 索引约 6s / 1698 块（而查询只要 0.3ms），所以由 UI 在**后台线程**
+    启动时调用，避免第一次提问卡住界面。这里**不吞异常** —— 索引没建起来必须
+    让人看见，否则用户只会觉得"什么都查不到"却不知道原因。
+    """
+    if not course:
+        return False
+    return study.warm_up(course)
+
+
+# =================== 知识点讲解 ====================
+
 def explain_topic(query: str, course: str, top_k: int = 5) -> Result[ExplainResultData]:
-    """查询知识点讲解：教材原文检索 + (可选) AI 总结。"""
+    """查询知识点讲解：教材原文检索（BM25）+ (可选) AI 总结。
+
+    与离线阅读器**共用同一个检索引擎**，所以行为也一致：书里没有的概念会如实
+    拒答（status="not_found"），而不是硬凑 top-5 让用户以为书里讲过。
+    """
     if not query.strip():
         return Result.fail("问题为空")
     if not course:
@@ -226,6 +253,7 @@ def explain_topic(query: str, course: str, top_k: int = 5) -> Result[ExplainResu
     except Exception as e:
         return Result.fail(str(e), "❌ 讲解生成失败")
 
+    status = result.get("status", "ok")
     data = ExplainResultData(
         query=query,
         evidence=[
@@ -233,15 +261,31 @@ def explain_topic(query: str, course: str, top_k: int = 5) -> Result[ExplainResu
                 section_path=ev.get("section_path", ""),
                 doc_title=ev.get("doc_title", ""),
                 content=ev.get("content", ""),
+                page_no=ev.get("page_no"),
+                score=ev.get("score", 0.0),
             )
             for ev in result.get("evidence", [])
         ],
         answer=result.get("answer", ""),
         ai_available=result.get("ai_available", False),
+        status=status,
+        related_sections=[s.get("section_path", "")
+                          for s in result.get("sections", [])
+                          if s.get("section_path")],
+        missing_tokens=list(result.get("missing_tokens", [])),
+        message=result.get("message", ""),
     )
+
+    # 拒答是**正确结果**而非失败：书里确实没讲过，如实告知即可（success 仍为 True，
+    # 这样 UI 走正常渲染分支，用中性样式展示"未找到"，而不是弹一个像报错的提示）。
+    if status in ("not_found", "no_corpus", "empty_query"):
+        return Result.ok(data, data.message or "书中未找到相关内容")
+
     msg = f"✅ 已检索到 {len(data.evidence)} 条依据" + (
         " + AI 讲解" if data.ai_available else "（本地 AI 未启用，仅展示教材原文）"
     )
+    if data.message:            # 如「薛定谔」在书中未出现，已按其余关键词检索
+        msg = f"{data.message}　{msg}"
     return Result.ok(data, msg)
 
 
@@ -251,4 +295,5 @@ __all__ = [
     "get_section_reading",
     "render_section_html",
     "explain_topic",
+    "warm_up",
 ]

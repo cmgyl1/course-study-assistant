@@ -24,7 +24,7 @@ Python 一律用 D:/atomcode/大学生软件/tools/Python/python.exe。
 2. docs/工程操作规范.md  ← 怎么做：六条铁律 / 排查规程 / Bug 案例库 / 不可行路线 / Prompt 模板
 3. docs/架构设计与长期规划.md ← 是什么：分层架构 / 产品定位 / 路线图 / 技术决定
 
-当前基线：485 页 · 插图落位 296/296 · 表格还原 93/93 · 检索验收 9/9 · test_retrieval 8/8。
+当前基线：485 页 · 插图落位 296/296 · 表格还原 93/93 · 检索验收 9/9 · test_retrieval 15/15。
 先复述你理解的「当前状态 + 下一步」，等我确认后再动手。
 ```
 
@@ -74,6 +74,7 @@ UI 与引擎解耦，引擎零 UI 依赖。详见 `docs/架构设计与长期规
 | 插图落位 | **296 / 296 = 100%**（每张图后紧跟同名图题、同页） |
 | 表格还原 | **93 张，结构合格 93 / 93 = 100%** |
 | 检索验收 | **9 / 9 通过**（含拒答、AND→OR 放宽、跨页落位） |
+| `test_retrieval` | **15 / 15 通过**（含 7 条 **UI 路径回归锁**，见 §2.2） |
 | 阅读器 | 241 节 / 1459 片段 / 296 图 / 93 表 / 页码 1–474 |
 | 单册全量 OCR | 上半 1163s · 下半 1071s（≈4s/页） |
 | 单册缓存重放 | 上半 **24s** · 下半 **14s**（≈ 50–76 倍加速） |
@@ -85,10 +86,11 @@ UI 与引擎解耦，引擎零 UI 依赖。详见 `docs/架构设计与长期规
 | 项 | 状态 |
 |---|---|
 | 知识树 | 上册 5 章 / 下册 16 章 / 课件版 9 章（附录已正确归位） |
-| 章节阅读 | `QTextBrowser` 内嵌原文 + 插图 + 表格，**保序**呈现（图在原位，不堆章尾） |
-| 向量库 | 261 块（v0.4 重建后 0 页眉污染、0 残留） |
-| 测试 | `tests/` 10 个冒烟测试全绿，且**不污染真实数据** |
-| exe | `dist/大学生软件.exe` **v0.5 已重打包**（2026-09-16，149 MB）；离屏实测可正常启动、`crash.log` 为空 |
+| 章节阅读 | `QTextBrowser` 内嵌原文 + 插图 + 表格，**保序**呈现（图在原位，不堆章尾）；插图**点击弹窗放大** |
+| 检索路径 | 自学页输入框 → `engine/retrieval` **BM25**，语料 **1698 块**，与离线阅读器**完全同源**（含拒答与"未出现词"提示）。首次提问前由后台线程预热索引（≈6s，查询 0.3ms） |
+| 向量库 | **已整体移除**（2026-09-23）—— `chromadb` 依赖、`knowledge_base.py`、`data/vector_store/`（261 块）、`tests/test_knowledge_base.py` 全部删除，全项目只剩 BM25 一条路。原数据备份在 `data/backup/2026-09-23-vector_store/` |
+| 测试 | `tests/` **9 个测试文件全绿**（`test_retrieval` 15 · `test_materials_service` 11 · `test_study_service` 9 · `test_practice_service` 8 · `test_dashboard_service` 5 + 冒烟），且**不污染真实数据**（测试教材走独立课程名 + `finally` 清理） |
+| exe | `dist/大学生软件.exe` **v0.5 已重打包**（2026-09-23，**105 MB** —— 去掉 chromadb 后比上一版小 44 MB）；离屏实测可启动、`crash.log` 空 |
 
 ### 2.3 已知限制（不是 bug，别当 bug 修）
 
@@ -167,14 +169,14 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 ### 3.4 验收口径（低于此即回归）
 
 ```
-插图落位 296/296 · 表格结构 93/93 · 检索 9/9 · test_retrieval 8/8
+插图落位 296/296 · 表格结构 93/93 · 检索 9/9 · test_retrieval 15/15
 ```
 
 ```bash
 "$PY" build/acceptance.py --log build/accept_full.log   # 检索 + 插图 + 表格
 "$PY" build/verify_inline.py                            # 图片文件实存（防裂图）
+"$PY" build/verify_study_page.py                        # 自学页闭环（离屏起真实窗口）
 "$PY" tests/test_retrieval.py                           # 检索与阅读层
-"$PY" tests/test_knowledge_base.py                      # 向量库
 "$PY" build/_uicheck.py && build/_qtcheck.py 对比        # UI 链路 + 图片真实加载
 ```
 
@@ -182,9 +184,12 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 
 ```bash
 "$PY" -m PyInstaller --noconfirm --onefile --windowed --name 大学生软件 \
-  --paths src --collect-all chromadb --collect-all jieba \
+  --paths src --collect-all jieba \
   --distpath dist --workpath build/PyInstaller_work --specpath build src/main.py
 ```
+
+> 已去掉 `--collect-all chromadb`（2026-09-23 chroma 链路整体移除后不再需要），
+> 这是 exe 体积的主要来源之一。
 
 ### 3.6 推送代码（网络受限时的备用通道）
 
@@ -200,6 +205,13 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 它不走 git 传输协议，而是用 Git Data API 逐个建出 blob / tree / commit，
 **生成的 commit sha 与本地相同**，推完不分叉、不需要 force。
 凭据取自 git 凭据管理器，脚本不保存任何密钥。文件头注释有完整说明与边界。
+
+> ⚠️ **两个环境坑（都已内置处理，但值得知道）**
+> 1. `git credential fill` 若**零输出挂住**，是 Git for Windows 的 `helper-selector`
+>    在等 GUI 选后端。脚本已改为直连 `wincred → manager → 默认链`（各带超时）。
+> 2. 推完后 `origin/main` **不会自动前进**（本环境 `git update-ref` 被拦截）。
+>    用 `git status` 看着不干净时，手动对齐：
+>    `echo <远端sha> > .git/refs/remotes/origin/main`
 
 ---
 
@@ -257,28 +269,31 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 │   │   ├── layout.py          ← 🔴 版面还原核心（行→段→标题→图区→表格）
 │   │   ├── retrieval.py       ← 🟡 切块 / 标题索引 / BM25 / 放宽 / 拒答
 │   │   ├── textbook_reader.py ← 🟡 按章节取保序块序列
-│   │   ├── knowledge_base.py  ← chroma 向量库（n-gram 哈希，旧链路）
 │   │   ├── study.py / practice.py / finals.py / question_bank.py / converter.py / config.py
 │   ├── services/              ← 编排层（UI 只调这里）
 │   ├── ui/                    ← 设计系统 / 动效
 │   └── main.py                ← PySide6 主程序
 ├── tools/                     ← 生产脚本 + 自带运行时（Python / pandoc / LibreOffice）
 │   ├── ocr_textbook.py  merge_ocr_pages.py  build_corpus.py  build_reader.py
-│   └── rebuild_knowledge_base.py  check_knowledge_quality.py  import_textbooks.py …
+│   ├── import_textbooks.py  clean_textbook.py  pptx_to_markdown.py
+│   ├── push_via_api.py        ← 网络受限时的 GitHub 推送通道（见 §3.6）
+│   └── archive_2026-09-23/    ← chroma 专用脚本（已归档：rebuild / quality 检查）
 ├── build/                     ← 探针与验收脚本（一次性问题用一次，但先留着）
 │   ├── acceptance.py          ← 主验收
 │   ├── make_screenshots.py    ← 离屏生成 README 界面截图（→ docs/images/）
+│   ├── verify_study_page.py   ← 自学页离屏闭环（10 项断言 + 截图）
 │   ├── probe_boxes.py         ← 改版面判据的第一手证据
-│   └── archive_2026-09-11/    ← 早期一次性实验（已归档，勿删）
-├── tests/                     ← 10 个冒烟测试，默认隔离、不写真实数据
+│   ├── archive_2026-09-11/    ← 早期一次性实验（已归档，勿删）
+│   └── archive_2026-09-23/    ← 两条检索路的对比探针（chroma 拆除后不可运行，留作取证）
+├── tests/                     ← 9 个冒烟测试，默认隔离、不写真实数据
 ├── data/                      ← 全部产物
 │   ├── textbooks/               原始 PDF（唯一权威源，勿删）
 │   ├── ocr_cache/<册>/          原始 OCR 框缓存（改判据秒级重放的关键，勿删）
 │   ├── textbooks_md/<册>/       分页 md
 │   ├── textbooks_md/<册>.md     合并后的整册 md
 │   ├── figures/<册>/            裁切插图
-│   ├── reader.html              离线阅读器（单文件）
-│   ├── vector_store/            向量库
+│   ├── reader.html              离线阅读器（单文件，与桌面端同引擎）
+│   ├── corpus_cache/            检索语料切块缓存（可选，由 tools/build_corpus.py 生成）
 │   └── backup/<日期>/           回滚点（保留 ≥30 天，不是垃圾）
 ├── dist/                      ← 打包产物
 └── reserved/                  ← 预留模块位（答疑 / 课程同步 / 移动端）
@@ -288,10 +303,15 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 
 ## 7. 下一步（按优先级）
 
-1. **人工点检新版 exe** —— `dist/大学生软件.exe` 已于 2026-09-16 重打包（v0.5），
-   离屏实测可启动；下一步是**肉眼验收**：知识树章节、原文内嵌图是否在原位、表格是否正确渲染。
+1. **人工点检新版 exe** —— `dist/大学生软件.exe` 已于 2026-09-23 重打包（**105 MB**，含检索路径修复
+   与 chroma 拆除）。离屏实测可启动，下一步是**肉眼验收**：知识树章节、原文内嵌图是否在原位、
+   表格是否正确渲染、**输入框提问是否与离线阅读器给出同样结果**。
 2. **接入其余 3 门课** —— 走同一条流水线；扫描件质量不同可能需微调 `layout.py` 判据（改判据流程见规范 §7-P7）。
-3. **v0.6 语义检索升级（可选）** —— 引入 `bge-small-zh-v1.5`（~95MB）+ `onnxruntime`，与现有 BM25 做 RRF 混合检索。属增益项，不阻塞交付。详见架构文档附录 A。
+3. **修「短段落被静默丢弃」**（2026-09-23 发现，**尚未修**）—— `retrieval.build_chunks` 的
+   `min_chars=60` 分支在"前一块恰好是标题块"时直接 `continue`，于是**小节首段若短于 60 字会整段消失**
+   （搜不到、阅读页也没有）。真实教材影响有限（首段通常较长），但它属于"静默丢数据"，
+   与规范 §5 第 8 条相悖。改的是语料构建判据，必须重跑 `acceptance.py` 与 `test_retrieval.py` 对照。
+4. **v0.6 语义检索升级（可选）** —— 引入 `bge-small-zh-v1.5`（~95MB）+ `onnxruntime`，与现有 BM25 做 RRF 混合检索。属增益项，不阻塞交付。详见架构文档附录 A。
 
 > **已否决项不进路线图**：本地大模型方案（Ollama）已于 2026-09-16 否决，论证见架构文档附录 B —— **不要再提**。
 
@@ -300,4 +320,4 @@ PY="D:/atomcode/大学生软件/tools/Python/python.exe"
 _本文档是项目唯一入口。状态变化时更新 §2 与 §7；新增文档时先读 §5 的归位规则。_
 
 **许可证**：程序本体采用 [MIT License](LICENSE)。仓库**不含**任何教材 PDF 与派生数据
-（OCR 文本 / 插图 / 向量库），那部分版权归原作者与出版方，请自备合法持有的教材后自行生成。
+（OCR 文本 / 插图 / 检索语料），那部分版权归原作者与出版方，请自备合法持有的教材后自行生成。

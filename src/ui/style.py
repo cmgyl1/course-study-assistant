@@ -412,6 +412,12 @@ QLabel#statusWarn {{
     color: {GOLD};
     font-size: 13px;
 }}
+/* ===== 检索索引构建状态（自学页，随后台预热线程更新） ===== */
+QLabel#indexState {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+    padding-left: 10px;
+}}
 """
 
 

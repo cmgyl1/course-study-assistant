@@ -53,8 +53,8 @@ def test_get_section_content_success():
         {"section_path": "第1章>1.1", "doc_title": "计算机网络", "content": "..."},
         {"section_path": "第1章>1.2", "doc_title": "计算机网络", "content": "..."},
     ]
-    with patch.object(ss, "kb") as mock_kb:
-        mock_kb.get_section_content.return_value = raw
+    with patch.object(ss, "study") as mock_study:
+        mock_study.search_section.return_value = raw
         r = ss.get_section_content("第1章", "计算机网络")
 
     assert r.success is True
@@ -63,8 +63,8 @@ def test_get_section_content_success():
 
 
 def test_get_section_content_empty():
-    with patch.object(ss, "kb") as mock_kb:
-        mock_kb.get_section_content.return_value = []
+    with patch.object(ss, "study") as mock_study:
+        mock_study.search_section.return_value = []
         r = ss.get_section_content("任意", "计算机网络")
     assert r.success is True
     assert "暂无独立内容" in r.message

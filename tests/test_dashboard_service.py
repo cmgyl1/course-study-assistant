@@ -65,7 +65,7 @@ def test_generate_review_outline_no_textbook():
         r = ds.generate_review_outline("空课程")
     assert r.success is True
     assert r.data.chapters == []
-    assert "暂无已入库教材" in r.message
+    assert r.message == "该课程暂无教材"
 
 
 def main() -> int:

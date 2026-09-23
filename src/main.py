@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import html as _html
 import sys
+import threading
 from pathlib import Path
 
 # --- 崩溃诊断钩子：PyInstaller windowed 下未捕获异常/原生崩溃默认静默，
@@ -44,10 +46,10 @@ from PySide6.QtWidgets import (
     QListWidget, QStackedWidget, QLabel, QPushButton, QLineEdit,
     QTextEdit, QTextBrowser, QComboBox, QFileDialog, QMessageBox, QSplitter,
     QTreeWidget, QTreeWidgetItem, QSpinBox, QListWidgetItem,
-    QGroupBox, QFormLayout, QFrame, QSizePolicy,
+    QGroupBox, QFormLayout, QFrame, QSizePolicy, QDialog,
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QFont, QBrush, QCursor, QPalette
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QUrl
+from PySide6.QtGui import QColor, QFont, QBrush, QCursor, QPalette, QPixmap
 
 from engine.config import ensure_data_dirs, COURSES
 from engine import practice  # 仅用于 PracticeSession 类型注解
@@ -149,7 +151,7 @@ class HomePage(BasePage):
         self.layout.addWidget(welcome)
 
         subtitle = QLabel(
-            "本地知识库 · 教材权威依据 · 自学 / 刷题 / 期末冲刺 一站式学习工作台")
+            "本地教材全文检索 · 自学 / 刷题 / 期末冲刺 一站式学习工作台")
         subtitle.setObjectName("pageSubtitle")
         self.layout.addWidget(subtitle)
         self.layout.addSpacing(4)
@@ -177,7 +179,7 @@ class HomePage(BasePage):
         self.layout.addWidget(kpi_title)
         kpi_row = QHBoxLayout()
         kpi_row.setSpacing(14)
-        self.kpi_chunks = _KpiCard("教材块 · 入库知识片段", "kpiNumber")
+        self.kpi_chunks = _KpiCard("教材块 · 可检索片段", "kpiNumber")
         self.kpi_bank = _KpiCard("题库 · 已录入题目", "kpiNumber")
         self.kpi_wrong = _KpiCard("错题本 · 待复习题目", "kpiNumberGold")  # 金色，因为是警示
         self.kpi_docx = _KpiCard("Word 教材 · 可批注文档", "kpiNumberSage")  # 绿色，因为是利好
@@ -245,9 +247,9 @@ class MaterialsPage(BasePage):
         self.layout.addWidget(self.course_box)
 
         # 教材导入
-        grp = QGroupBox("教材导入（PDF → Markdown → 知识库）")
+        grp = QGroupBox("教材导入（PDF → Markdown → 检索语料）")
         form = QFormLayout(grp)
-        self.md_btn = QPushButton("选择教材 PDF/文档并转换入库")
+        self.md_btn = QPushButton("选择教材 PDF/文档并导入")
         self.md_btn.clicked.connect(self.import_textbook)
         form.addRow(self.md_btn)
         self.layout.addWidget(grp)
@@ -329,9 +331,12 @@ class StudyPage(BasePage):
         self.course_box.addItems(list(COURSES.keys()))
         self.refresh_btn = QPushButton("刷新知识树")
         self.refresh_btn.clicked.connect(self.refresh_tree)
+        self.index_label = QLabel("")          # 检索索引构建状态，见 _restart_warm
+        self.index_label.setObjectName("indexState")
         top.addWidget(QLabel("课程："))
         top.addWidget(self.course_box)
         top.addWidget(self.refresh_btn)
+        top.addWidget(self.index_label)
         top.addStretch()
         self.layout.addLayout(top)
 
@@ -341,7 +346,7 @@ class StudyPage(BasePage):
         self.tree.itemClicked.connect(self.on_tree_click)
         self.layout.addWidget(self.tree, 2)
 
-        grp = QGroupBox("知识点讲解（基于教材知识库检索）")
+        grp = QGroupBox("知识点讲解（教材原文检索 · BM25）")
         form = QHBoxLayout(grp)
         self.query_edit = QLineEdit()
         self.query_edit.setPlaceholderText("输入知识点，如：物理层 比特流 / TCP 三次握手")
@@ -355,8 +360,57 @@ class StudyPage(BasePage):
         self.log_box = QTextBrowser()
         self.log_box.setObjectName("logBox")
         self.log_box.setOpenExternalLinks(False)
+        # 插图在 HTML 里是 <a href="file:///…"><img …></a>，点击由我们自己接管成
+        # 弹窗放大。必须关掉 Qt 的默认链接处理，否则它会去"用系统程序打开这张图"。
+        self.log_box.setOpenLinks(False)
+        self.log_box.anchorClicked.connect(self._on_anchor_clicked)
         self.log_box.setMinimumHeight(120)
         self.layout.addWidget(self.log_box, 1)
+
+        # 检索索引预热：建 BM25 索引约 6s / 1698 块，而查询只要 0.3ms —— 不预热的
+        # 话第一次提问会卡住界面 6 秒。放到后台线程建，主线程只轮询状态。
+        self._warm_state = "idle"
+        self._warm_course = ""
+        self._warm_poll = QTimer(self)
+        self._warm_poll.setInterval(400)
+        self._warm_poll.timeout.connect(self._on_warm_tick)
+        self.course_box.currentIndexChanged.connect(self._restart_warm)
+        self._restart_warm()
+
+    # ---------------- 检索索引预热 ----------------
+
+    def _restart_warm(self) -> None:
+        """切换课程后重新预热。
+
+        注意：**必须在主线程读 course_box** —— 跨线程读 Qt 控件是不安全的，
+        所以这里先把课程名取出来，再交给后台线程。
+        """
+        self._warm_course = self.course_box.currentText()
+        self._warm_state = "idle"
+        self.index_label.setText("检索索引构建中…")
+        threading.Thread(target=self._warm_worker, daemon=True).start()
+        self._warm_poll.start()
+
+    def _warm_worker(self) -> None:
+        """后台建索引。**这里绝不能碰任何 Qt 控件**（跨线程访问会崩）。"""
+        try:
+            ok = study_service.warm_up(self._warm_course)
+            self._warm_state = "ready" if ok else "no_corpus"
+        except Exception as e:      # 预热失败要让用户看见，不静默吞掉
+            self._warm_state = f"failed:{type(e).__name__}: {e}"
+
+    def _on_warm_tick(self) -> None:
+        """主线程轮询：把后台状态反映到 self.index_label。"""
+        if self._warm_state == "idle":
+            return
+        self._warm_poll.stop()
+        state = self._warm_state
+        if state == "ready":
+            self.index_label.setText("检索索引就绪")
+        elif state == "no_corpus":
+            self.index_label.setText("该课程暂无教材")
+        else:
+            self.index_label.setText(f"索引构建失败：{state[len('failed:'):]}")
 
     def refresh_tree(self) -> None:
         self.tree.clear()
@@ -418,7 +472,7 @@ class StudyPage(BasePage):
             node = node.parent()
         path = " > ".join(parts)
         # 读"保序原文"：标题/段落/插图按原书顺序返回，图落在图题之上 ——
-        # 不走 RAG（那会按相关度重排、只取 top-3，位置就全乱了）。
+        # 不走检索排序（那会只取 top-3 并按相关度重排，位置就全乱了）。
         r = study_service.get_section_reading(path, course)
         self.log_box.clear()
         if not r.success or r.data is None:
@@ -440,19 +494,89 @@ class StudyPage(BasePage):
         r = study_service.explain_topic(query, self.course_box.currentText(), top_k=5)
         self.log_box.clear()
         if not r.success or r.data is None:
-            self.log_box.append(f"❌ {r.message}")
+            self.log_box.setHtml(self._notice(f"❌ {r.message}", "#e06c6c"))
             return
-        data = r.data
-        self.log_box.append(f"问题：{data.query}\n")
-        for i, ev in enumerate(data.evidence, 1):
-            self.log_box.append(f"依据 {i}：{ev.doc_title} | {ev.section_path}")
-            self.log_box.append(ev.content[:300] + ("…" if len(ev.content) > 300 else ""))
-            self.log_box.append("")
-        if data.ai_available and data.answer:
-            self.log_box.append("【AI 讲解】\n" + data.answer)
-        else:
-            self.log_box.append("（本地 AI 未启用，以上为教材原文检索结果）")
+        self.log_box.setHtml(self._render_answer(r.data))
         self.log_box.verticalScrollBar().setValue(0)
+
+    def _on_anchor_clicked(self, url: QUrl) -> None:
+        """点插图 → 弹窗放大（教材里的协议帧图、电路图不放大根本看不清）。"""
+        if url.scheme() != "file":
+            return
+        pix = QPixmap(url.toLocalFile())
+        if pix.isNull():
+            return
+        screen = self.screen()
+        avail = screen.availableGeometry() if screen is not None else None
+        max_w = int((avail.width() if avail else 1280) * 0.8)
+        max_h = int((avail.height() if avail else 800) * 0.8)
+        if pix.width() > max_w or pix.height() > max_h:
+            pix = pix.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("插图预览")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(8, 8, 8, 8)
+        canvas = QLabel()
+        canvas.setPixmap(pix)
+        lay.addWidget(canvas)
+        dlg.exec()
+
+    @staticmethod
+    def _notice(text: str, color: str = "#e0b266") -> str:
+        return (f'<p style="margin:12px 0;color:{color};font-size:14px;line-height:1.7">'
+                f'{_html.escape(text)}</p>')
+
+    def _render_answer(self, data) -> str:
+        """检索结果 → HTML。
+
+        三条硬规则（每一条都对应旧版的一个坑）：
+          1. status=not_found 时**只显示"没找到"**、不显示任何段落 ——
+             旧版无论问什么都返回 top-5，用户会以为书里讲过；
+          2. 原文段落**不截断**（教材一段平均 ~350 字，旧版截到 300 等于每段都缺尾）；
+          3. 每条依据带书名 / 章节路径 / 页码，便于对照纸质书。
+        """
+        head = ('<p style="color:#8a94a6;font-size:12px;margin:0 0 10px">问题：'
+                f'{_html.escape(data.query)}</p>')
+
+        if data.status in ("not_found", "no_corpus", "empty_query"):
+            tip = data.message or "书中未找到相关内容。"
+            return (head
+                    + self._notice(f"🔍 {tip}")
+                    + '<p style="color:#8a94a6;font-size:12px;line-height:1.7">'
+                      '教材里确实没有讲这个概念。可以换用教材里的术语再问一次，'
+                      '或先在左侧知识树里定位相关章节读原文。</p>')
+
+        parts = [head]
+        if data.missing_tokens:
+            parts.append(self._notice(
+                f"⚠️ 「{'、'.join(data.missing_tokens)}」在书中未出现，"
+                "以下按其余关键词检索。"))
+        if not data.evidence:
+            parts.append(self._notice("未检索到原文段落。"))
+        for i, ev in enumerate(data.evidence, 1):
+            body = _html.escape(ev.content).replace(chr(10), "<br>")
+            src = " · ".join(x for x in (ev.doc_title,
+                                         f"p{ev.page_no}" if ev.page_no else "") if x)
+            parts.append(
+                f'<p style="margin:14px 0 4px;color:#5A8DD6;font-size:13px">依据 {i}'
+                f'　<span style="color:#8a94a6;font-size:12px">'
+                f'{_html.escape(ev.section_path)}</span>'
+                f'<span style="color:#7c8698;font-size:11px">　{_html.escape(src)}</span>'
+                '</p>'
+                f'<p style="margin:0;line-height:1.8">{body}</p>')
+        if data.related_sections:
+            items = "".join(f'<li style="margin:2px 0">{_html.escape(s)}</li>'
+                            for s in data.related_sections)
+            parts.append(
+                '<p style="margin:16px 0 4px;color:#5A8DD6;font-size:13px">相关章节</p>'
+                '<ul style="margin:0;padding-left:22px;color:#A8B0BB;font-size:12px">'
+                f'{items}</ul>')
+        if data.ai_available and data.answer:
+            parts.append('<p style="margin:16px 0 4px;color:#5A8DD6;font-size:13px">'
+                         'AI 讲解</p>'
+                         '<p style="margin:0;line-height:1.8">'
+                         f'{_html.escape(data.answer)}</p>')
+        return "".join(parts)
 
 
 # ---------------- 刷题页 ----------------

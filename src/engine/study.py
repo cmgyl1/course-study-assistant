@@ -1,19 +1,19 @@
 """自学模块：知识树 / 知识点讲解 / Word 教材生成与批注归档。
 
 - 知识树：从教材 Markdown 的标题层级提取章节结构（学生按图索骥）；
-- 讲解：基于教材知识库检索相关章节原文作为讲解依据；
-  AI 生成讲解为预留能力（Ollama 启用后接 qwen2.5:7b），当前返回检索原文；
+- 讲解：基于教材原文做 **BM25 词法检索**（与离线阅读器同一套引擎，见 retrieval.py），
+  返回命中的原文段落作为讲解依据；AI 生成讲解为预留能力，当前未启用；
 - Word 教材：把教材 Markdown 转成 .docx（python-docx），交本机 Word/WPS 批注，
   软件负责把批注后的文件归档到 annotations/，可随时调出。
 """
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 
 from .config import TEXTBOOKS_MD_DIR, TEXTBOOKS_DOCX_DIR, ANNOTATIONS_DIR
-from .knowledge_base import search_textbook
-from .retrieval import infer_chapter
+from .retrieval import Retriever, build_from_markdown_files, infer_chapter
 
 
 # ---------- 知识树 ----------
@@ -172,26 +172,158 @@ def get_course_tree(course: str) -> list[dict]:
     return trees
 
 
-# ---------- 知识点讲解 ----------
+# ---------- 教材检索（BM25 词法链路） ----------
+
+# 语料与 tools/build_reader.py、tests/test_retrieval.py **同源**：该课程的教材
+# Markdown，排除"课件版"（那是 PPT 摘要、不是教材原文）。
+#
+# 为什么必须缓存：建 BM25 索引约 6s（1698 块），而查询只要 0.3ms。所以按课程在
+# **进程内只建一次**，并由 UI 启动时调 warm_up() 在后台线程预热，用户不会有感知。
+#
+# 历史教训：这里原本走 knowledge_base.search_textbook（chromadb + 字符 n-gram
+# 哈希 embedding）。那条路只有 261 块语料（覆盖 15.4%），score 恒为 0（排序信息
+# 丢失），且没有任何拒答机制 —— 实测「三次握手」返回的是 IP 地址片段，
+# 「量子纠缠」照样返回 5 条垃圾。改用 BM25 后同一批查询 7:0 全胜。
+_RETRIEVER_CACHE: dict[str, Retriever | None] = {}
+_RETRIEVER_LOCK = threading.Lock()
+
+
+def _course_markdowns(course: str) -> list[Path]:
+    from .textbook_reader import list_books
+
+    return [m for m in list_books(course) if "课件" not in m.name]
+
+
+def get_retriever(course: str = "") -> Retriever | None:
+    """取某课程的 BM25 检索器（进程内缓存）。该课程没有教材时返回 None。"""
+    if course in _RETRIEVER_CACHE:
+        return _RETRIEVER_CACHE[course]
+    with _RETRIEVER_LOCK:
+        # 双重检查：等锁期间可能已被另一个线程建好了
+        if course in _RETRIEVER_CACHE:
+            return _RETRIEVER_CACHE[course]
+        mds = _course_markdowns(course)
+        retriever = (Retriever(build_from_markdown_files(mds, course=course))
+                     if mds else None)
+        _RETRIEVER_CACHE[course] = retriever
+        return retriever
+
+
+def warm_up(course: str = "") -> bool:
+    """预热检索索引（供 UI 在后台线程调用，避免首次提问卡 6 秒）。"""
+    return get_retriever(course) is not None
+
+
+# ---------- 语料规模统计（首页 KPI / 期末看板） ----------
+
+def count_textbook_chunks(md_path: Path | str, course: str = "") -> int:
+    """单份教材 Markdown 的检索片段数（只切块、不建索引，毫秒级）。"""
+    return len(build_from_markdown_files([Path(md_path)], course=course))
+
+
+def count_course_chunks(course: str) -> int:
+    """某课程全部教材的检索片段数（排除课件版）。"""
+    mds = _course_markdowns(course)
+    if not mds:
+        return 0
+    return len(build_from_markdown_files(mds, course=course))
+
+
+def get_course_count() -> dict[str, int]:
+    """各课程的教材检索片段数（只列出有教材的课程）。
+
+    替代原 `knowledge_base.get_course_count()`（chroma 块数）。语义一致 ——
+    都是"该课程教材切成了多少可检索片段"；但数据源改为**真实检索语料**
+    （`retrieval.build_from_markdown_files`），因此首页 KPI 与自学页实际
+    检索到的块数**完全对齐**（旧实现两者差 6.5 倍：261 vs 1698）。
+    切块实测 0.03s/册，可放心在 UI 线程调用。
+    """
+    from .config import COURSES
+
+    out: dict[str, int] = {}
+    for course in COURSES:
+        n = count_course_chunks(course)
+        if n:
+            out[course] = n
+    return out
+
 
 def explain_topic(query: str, course: str = "", top_k: int = 5) -> dict:
-    """基于教材知识库讲解知识点。
+    """基于教材原文检索讲解知识点 —— BM25 词法链路，与离线阅读器同一套。
 
-    返回：{query, evidence: [教材原文片段], answer, ai_available}
-    - ai_available=False 表示当前为"检索原文"模式（Ollama 未启用）；
-    - 启用 Ollama 后，answer 由模型基于 evidence 生成（见 generate_ai_answer）。
+    返回：{query, status, tokens, evidence, sections, answer, ai_available,
+          missing_tokens, message}
+    - status ∈ {"ok", "not_found", "empty_query", "no_corpus"}。
+      **not_found 必须被 UI 如实展示** —— 书里没有的概念就说没有，不能像旧路
+      那样不管问什么都返回 top-5（用户会以为书里讲过）。
+    - missing_tokens：提问里有、但全库都没出现过的词（如「薛定谔」），
+      用于提示"已按其余关键词检索"。
+    - ai_available=False 表示当前是"检索原文"模式（AI 讲解为预留能力）。
     """
-    evidence = search_textbook(query, course=course, top_k=top_k)
+    retriever = get_retriever(course)
+    if retriever is None:
+        return {
+            "query": query, "status": "no_corpus", "tokens": [],
+            "evidence": [], "sections": [], "answer": "",
+            "ai_available": False, "missing_tokens": [],
+            "message": "该课程暂无教材，请先在「资料管理」导入教材。",
+        }
+
+    res = retriever.search(query, top_k=top_k)
+    evidence = [
+        {
+            "content": p.get("text", ""),
+            "doc_title": p.get("doc_title", ""),
+            "section_path": p.get("section_path", ""),
+            "page_no": p.get("page_no"),
+            "source_file": p.get("source_file", ""),
+            "score": p.get("score", 0.0),
+        }
+        for p in res.get("passages", [])
+    ]
     ai_available = _is_ai_available()
-    answer = ""
-    if ai_available:
-        answer = generate_ai_answer(query, evidence)
+    answer = (generate_ai_answer(query, evidence)
+              if ai_available and evidence else "")
     return {
         "query": query,
+        "status": res.get("status", "ok"),
+        "tokens": res.get("tokens", []),
         "evidence": evidence,
+        "sections": res.get("sections", []),
         "answer": answer,
         "ai_available": ai_available,
+        "missing_tokens": res.get("missing_tokens", []),
+        "message": res.get("message", ""),
     }
+
+
+def search_section(section_path: str, course: str = "", top_k: int = 3) -> list[dict]:
+    """按章节路径检索该节原文片段（用节点标题当查询词）。
+
+    与 `textbook_reader.get_section_blocks`（按原序读整节）分工不同：
+    本函数返回**按相关度排序**的 top-k 片段，服务"问答/速览"场景；
+    阅读场景请用保序版本。
+
+    原实现走 chroma（`knowledge_base.get_section_content`），已随该依赖移除，
+    改为复用自学页同一套 BM25 引擎。
+    """
+    retriever = get_retriever(course)
+    if retriever is None:
+        return []
+    tail = (section_path or "").split(" > ")[-1].strip()
+    if not tail:
+        return []
+    res = retriever.search(tail, top_k=top_k)
+    return [
+        {
+            "content": p.get("text", ""),
+            "doc_title": p.get("doc_title", ""),
+            "section_path": p.get("section_path", ""),
+            "page_no": p.get("page_no"),
+            "score": p.get("score", 0.0),
+        }
+        for p in res.get("passages", [])
+    ]
 
 
 _AI_AVAILABLE_CACHE: tuple[float, bool] | None = None

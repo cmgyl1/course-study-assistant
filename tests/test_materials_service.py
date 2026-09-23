@@ -31,12 +31,9 @@ def test_import_textbook_success():
     def fake_convert(f, out_dir):
         return fake_md[f.stem]
 
-    def fake_ingest(md_path, course, doc_title):
-        return 261
-
     with patch.object(converter, "convert_file", side_effect=fake_convert), \
-         patch("services.materials_service.kb") as mock_kb:
-        mock_kb.ingest_textbook.side_effect = fake_ingest
+         patch("services.materials_service.study") as mock_study:
+        mock_study.count_textbook_chunks.return_value = 261
         r = ms.import_textbook(fakes_in, "计算机网络")
 
     assert r.success is True
@@ -45,7 +42,7 @@ def test_import_textbook_success():
         assert isinstance(o, FileImportOutcome)
         assert o.success is True
         assert o.file_name == f"教材{i}.pdf"
-        assert "261 块" in o.message
+        assert "261 个检索片段" in o.message
         assert o.chunks == 261
     assert "3" in r.message
 
@@ -60,8 +57,8 @@ def test_import_textbook_partial_failure():
         raise converter.ConversionError("PDF 损坏")
 
     with patch.object(converter, "convert_file", side_effect=fake_convert), \
-         patch("services.materials_service.kb") as mock_kb:
-        mock_kb.ingest_textbook.return_value = 10
+         patch("services.materials_service.study") as mock_study:
+        mock_study.count_textbook_chunks.return_value = 10
         r = ms.import_textbook(fakes_in, "计算机网络")
 
     assert r.success is True  # 部分成功仍 success=true
@@ -79,8 +76,7 @@ def test_import_textbook_all_failure():
     def fake_convert(f, out_dir):
         raise converter.ConversionError("x")
 
-    with patch.object(converter, "convert_file", side_effect=fake_convert), \
-         patch("services.materials_service.kb") as mock_kb:
+    with patch.object(converter, "convert_file", side_effect=fake_convert):
         r = ms.import_textbook(fakes_in, "计算机网络")
 
     assert r.success is False

@@ -4,7 +4,7 @@
     python tools/build_corpus.py --course 计算机网络
     python tools/build_corpus.py --course 计算机网络 --md "计算机网络（第8版）_谢希仁_上半.md"
 
-输出 data/vector_store/corpus.json：
+输出 data/corpus_cache/corpus.json：
     每块含 {id, text, section_path, page_no, doc_title, source_file, course, is_title}
     其中 is_title=True 的是"章节入口块"，供标题索引使用。
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from engine.config import TEXTBOOKS_MD_DIR, VECTOR_STORE_DIR
+from engine.config import TEXTBOOKS_MD_DIR, CORPUS_CACHE_DIR
 from engine.retrieval import build_from_markdown_files, save_corpus, Retriever
 
 
@@ -45,8 +45,8 @@ def main() -> int:
         print(f"  - {p.name}（{p.stat().st_size // 1024} KB）")
 
     chunks = build_from_markdown_files(md_files, course=args.course)
-    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = VECTOR_STORE_DIR / args.out
+    CORPUS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = CORPUS_CACHE_DIR / args.out
     save_corpus(chunks, out_path)
 
     stats = Retriever(chunks).stats()

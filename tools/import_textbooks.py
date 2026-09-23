@@ -1,5 +1,8 @@
 """教材一键导入脚本：扫描 data/textbooks/ 下的 PDF/Office 文件，
-自动转换为 Markdown → 入库知识库（向量化）→ 可选生成 Word 版教材。
+自动转换为 Markdown（检索语料来源）并生成 Word 版教材。
+
+检索语料在提问时按需从 Markdown 构建，因此没有独立的"入库"步骤；
+本脚本只做转换 + 落盘 + 片段数统计。
 
 用法：
     python tools/import_textbooks.py                # 导入全部
@@ -19,8 +22,7 @@ from engine.config import (
     ensure_data_dirs, TEXTBOOKS_DIR, TEXTBOOKS_MD_DIR, COURSES,
 )
 from engine.converter import convert_file, ConversionError
-from engine.knowledge_base import ingest_textbook
-from engine.study import generate_docx_textbook
+from engine.study import count_textbook_chunks, generate_docx_textbook
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".txt", ".md", ".epub"}
 
@@ -76,9 +78,9 @@ def main() -> int:
         course = guess_course(f.name) or list(COURSES.keys())[0]
         try:
             md = convert_file(f, TEXTBOOKS_MD_DIR)
-            n = ingest_textbook(md, course, f.stem)
+            n = count_textbook_chunks(md, course)
             docx = generate_docx_textbook(md)  # 生成 Word 版供批注
-            print(f"[OK] {f.name} → {md.name}（{n} 块入库）→ {docx.name}")
+            print(f"[OK] {f.name} → {md.name}（{n} 个检索片段）→ {docx.name}")
             ok_count += 1
         except ConversionError as e:
             print(f"[失败] {f.name}: {e}")

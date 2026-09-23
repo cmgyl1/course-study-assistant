@@ -43,7 +43,7 @@ def generate_review_outline(course: str) -> Result[ReviewOutlineData]:
         ai_available=o.get("ai_available", False),
     )
     if not data.chapters:
-        return Result.ok(data, f"该课程暂无已入库教材")
+        return Result.ok(data, f"该课程暂无教材")
     return Result.ok(data, f"✅ 已生成 {len(data.chapters)} 章复习提纲")
 
 

@@ -440,6 +440,7 @@ def _one_pass(
     sections = [{
         "title": chunks[i]["section_path"],
         "section_path": chunks[i]["section_path"],
+        "doc_title": chunks[i].get("doc_title", ""),
         "page_no": chunks[i].get("page_no"),
         "source_file": chunks[i].get("source_file", ""),
         "level": chunks[i].get("level"),
@@ -449,6 +450,7 @@ def _one_pass(
     passages = [{
         "text": chunks[i]["text"],
         "section_path": chunks[i].get("section_path", ""),
+        "doc_title": chunks[i].get("doc_title", ""),
         "page_no": chunks[i].get("page_no"),
         "source_file": chunks[i].get("source_file", ""),
         "score": round(s, 4),

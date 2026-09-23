@@ -1,4 +1,4 @@
-"""题库模块：按科目组织的 Markdown 题库文档（与教材知识库物理分离、独立检索）。
+"""题库模块：按科目组织的 Markdown 题库文档（与教材语料物理分离、独立管理）。
 
 题库文档规格（每科一个文件，存于 data/question_banks/）：
     # <课程名> 题库
@@ -27,7 +27,7 @@
 设计：
 - 题目从题库文档解析为结构化 dict，按科目缓存；
 - 按章节刷：题目可挂 section 元数据；随机组卷：按题型+数量抽取；
-- 向量化入库到独立 collection（QUESTION_COLLECTION），与教材检索分离；
+- 题库与教材语料分离：各自独立的 Markdown 目录，互不干扰；
 - 错题本（wrong_book/）与题库关联：记录题目标识（course + 题号）。
 """
 from __future__ import annotations
@@ -36,10 +36,7 @@ import json
 import re
 from pathlib import Path
 
-import chromadb
-
 from .config import QUESTION_BANKS_DIR, WRONG_BOOK_DIR
-from .knowledge_base import NGramEmbeddingFunction, _get_client, QUESTION_COLLECTION
 
 SECTION_HEADINGS = {
     "一": "选择题",
@@ -158,45 +155,10 @@ def load_question_bank(course: str = "") -> list[dict]:
     return all_q
 
 
-def index_question_bank(course: str = "") -> int:
-    """把题库题目向量化入库到独立 collection（与教材分离检索）。返回入库数。"""
-    questions = load_question_bank(course)
-    if not questions:
-        return 0
-    client = _get_client()
-    collection = client.get_or_create_collection(
-        name=QUESTION_COLLECTION, embedding_function=NGramEmbeddingFunction()
-    )
-    ids = [f"{q['course']}:{q['type']}:{q['no']}" for q in questions]
-    docs = []
-    for q in questions:
-        doc = f"【{q['type']}】{q['stem']}"
-        if q["options"]:
-            doc += "\n" + "\n".join(q["options"])
-        if q["answer"]:
-            doc += f"\n答案：{q['answer']}"
-        docs.append(doc)
-    metadatas = [{"course": q["course"], "type": q["type"], "no": q["no"],
-                  "answer": q["answer"], "explanation": q["explanation"]} for q in questions]
-    collection.upsert(ids=ids, documents=docs, metadatas=metadatas)
-    return len(questions)
-
-
-def search_question(query: str, course: str = "", top_k: int = 5) -> list[dict]:
-    """语义检索题库（独立于教材库）。"""
-    client = _get_client()
-    collection = client.get_or_create_collection(
-        name=QUESTION_COLLECTION, embedding_function=NGramEmbeddingFunction()
-    )
-    where = {"course": course} if course else None
-    result = collection.query(query_texts=[query], n_results=top_k, where=where)
-    items: list[dict] = []
-    metas = (result.get("metadatas") or [[]])[0]
-    docs = (result.get("documents") or [[]])[0]
-    dists = (result.get("distances") or [[]])[0]
-    for d, m, dist in zip(docs, metas, dists):
-        items.append({"content": d, **((m or {})), "score": round(1.0 - float(dist), 4)})
-    return items
+# 注：原有的 index_question_bank / search_question（chroma 题库向量检索）已随
+# chromadb 依赖一并移除。二者**从未被 UI 调用**（只有旧测试用过），且用的是与
+# 教材旧路同一个 NGramEmbeddingFunction（实测 score 恒为 0，排名信息丢失）。
+# 题库的真实使用方式是 load_question_bank（读 Markdown）+ sample_questions（随机组卷）。
 
 
 def sample_questions(course: str, by_type: dict[str, int] | None = None) -> list[dict]:

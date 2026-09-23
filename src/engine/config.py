@@ -36,7 +36,7 @@ ANNOTATIONS_DIR = DATA_DIR / "annotations"      # 批注归档
 QUESTION_BANKS_DIR = DATA_DIR / "question_banks"  # 题库（分科文档）
 WRONG_BOOK_DIR = DATA_DIR / "wrong_book"        # 错题本
 MATERIALS_DIR = DATA_DIR / "materials"          # 课件/讲义归档
-VECTOR_STORE_DIR = DATA_DIR / "vector_store"    # 向量库（RAG）
+CORPUS_CACHE_DIR = DATA_DIR / "corpus_cache"    # 检索语料切块缓存（原 chroma 向量库目录，已改用途）
 FIGURES_DIR = DATA_DIR / "figures"              # 教材插图（按坐标从 PDF 裁出）
 OCR_CACHE_DIR = DATA_DIR / "ocr_cache"          # 每页 OCR 原始框缓存（版面层可秒级重放）
 
@@ -53,5 +53,5 @@ def ensure_data_dirs() -> None:
     """确保所有数据目录存在。"""
     for d in (TEXTBOOKS_DIR, TEXTBOOKS_MD_DIR, TEXTBOOKS_DOCX_DIR,
               ANNOTATIONS_DIR, QUESTION_BANKS_DIR, WRONG_BOOK_DIR,
-              MATERIALS_DIR, VECTOR_STORE_DIR, FIGURES_DIR, OCR_CACHE_DIR):
+              MATERIALS_DIR, CORPUS_CACHE_DIR, FIGURES_DIR, OCR_CACHE_DIR):
         d.mkdir(parents=True, exist_ok=True)

@@ -4,16 +4,15 @@
   若本地 Ollama 可用，进一步由模型提炼重点/易考点；
   未启用时给出章节结构 + 章节标题层面的复习要点。
 - 错题重刷：复用 practice.make_wrong_review_session（对/错循环机制）。
-- 进度看板：聚合各模块进度（教材入库块数 / 题库题数 / 错题数 / 批注数 / Word 教材数）。
+- 进度看板：聚合各模块进度（教材检索片段数 / 题库题数 / 错题数 / 批注数 / Word 教材数）。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from .config import TEXTBOOKS_MD_DIR, TEXTBOOKS_DOCX_DIR, ANNOTATIONS_DIR
-from .knowledge_base import get_course_count
 from .question_bank import load_question_bank, get_wrong_questions
-from .study import get_course_tree, list_annotations, _is_ai_available
+from .study import get_course_count, get_course_tree, list_annotations, _is_ai_available
 
 
 # ---------- 复习提纲 ----------
@@ -108,7 +107,7 @@ def build_dashboard() -> dict:
     annotation_count = len(list_annotations())
 
     return {
-        "course_chunks": course_counts,     # 各课程教材块数
+        "course_chunks": course_counts,     # 各课程教材检索片段数（BM25 语料）
         "question_bank": bank_counts,       # 各课程题数
         "wrong_book": wrong_counts,         # 各课程错题数
         "textbook_docx": docx_count,        # Word 版教材数

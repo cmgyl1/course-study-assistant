@@ -1,11 +1,11 @@
 """materials_service —— 教材导入 / 课件归档 / Word 版教材 / 题库模板的编排入口。
 
-UI 不再直接调 converter / knowledge_base / question_bank / study，而是：
+UI 不再直接调 converter / question_bank / study，而是：
     MaterialsPage → materials_service.import_textbook(...) → engine 多个模块
 
 业务规则集中在这里：
-- 教材入库：先 markdown 化 → 再 ingest（按 source_file 清理旧块由 ingest_textbook 自己负责）
-- 课件归档：只转 markdown，不入向量库
+- 教材导入：markdown 化 → 统计检索片段数（检索语料在查询时按需构建，无"入库"步骤）
+- 课件归档：只转 markdown
 - Word 版教材：用 study.generate_all_docx_textbooks
 - 题库模板：4 门课程文件名按 "{课程名}-题库.md" 模板生成
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from engine import converter, knowledge_base as kb, question_bank as qb, study
+from engine import converter, question_bank as qb, study
 from engine.config import PROJECT_ROOT
 from .dto import FileImportOutcome, Result
 from .errors import FileImportError
@@ -35,10 +35,14 @@ def _materials_dir(course: str) -> Path:
     return d
 
 
-# =================== 教材入库（最常用业务） ====================
+# =================== 教材导入（最常用业务） ====================
 
 def import_textbook(file_paths: list[Path], course: str) -> Result[list[FileImportOutcome]]:
-    """批量把 PDF / DOCX / PPT 转 markdown 并入向量库。
+    """批量把 PDF / DOCX / PPT 转成 markdown，写入教材目录。
+
+    转换产物 `data/textbooks_md/<书名>.md` **就是检索语料的数据源** ——
+    自学页提问时按需构建 BM25 索引（进程内缓存），因此没有独立的"入库"步骤；
+    这里顺带统计一次片段数，让 UI 能即时反馈"这份教材有多少可检索内容"。
 
     每文件结果独立返回（成功 / 失败各 entry），UI 用列表展示。
     """
@@ -51,11 +55,11 @@ def import_textbook(file_paths: list[Path], course: str) -> Result[list[FileImpo
         f = Path(f)
         try:
             md_out = converter.convert_file(f, out_dir)
-            chunks = kb.ingest_textbook(md_out, course, f.stem)
+            chunks = study.count_textbook_chunks(md_out, course)
             outcomes.append(FileImportOutcome(
                 file_name=f.name,
                 success=True,
-                message=f"已入库 {chunks} 块",
+                message=f"已转换，共 {chunks} 个检索片段",
                 output_path=str(md_out),
                 chunks=chunks,
             ))
@@ -65,31 +69,31 @@ def import_textbook(file_paths: list[Path], course: str) -> Result[list[FileImpo
                 success=False,
                 message=f"转换失败：{e}",
             ))
-        except Exception as e:  # KB 写入失败等也归到导入失败
+        except Exception as e:  # 写盘/切块失败等也归到导入失败
             outcomes.append(FileImportOutcome(
                 file_name=f.name,
                 success=False,
-                message=f"入库失败：{type(e).__name__}: {e}",
+                message=f"导入失败：{type(e).__name__}: {e}",
             ))
 
     n_ok = sum(1 for o in outcomes if o.success)
     n_fail = len(outcomes) - n_ok
     if n_fail == 0:
-        return Result.ok(outcomes, f"✅ 入库完成：共 {n_ok} 个文件")
+        return Result.ok(outcomes, f"✅ 导入完成：共 {n_ok} 个文件")
     if n_ok == 0:
         # 全部失败：success=False 但保留 outcomes，让 UI 列出"哪些文件失败"
         return Result.fail_with_data(
             outcomes, f"全部 {n_fail} 个文件失败",
-            f"❌ 入库失败：{n_fail} 个文件",
+            f"❌ 导入失败：{n_fail} 个文件",
         )
-    # 部分成功：仍 success=True（毕竟有数据入库），但消息中标注
+    # 部分成功：仍 success=True（毕竟有教材落盘可检索），但消息中标注
     return Result.ok(outcomes, f"⚠️ 部分完成：{n_ok} 成功 / {n_fail} 失败")
 
 
 # =================== 课件归档 ====================
 
 def import_courseware(file_paths: list[Path], course: str) -> Result[list[FileImportOutcome]]:
-    """批量归档课件（只转 markdown，不入向量库）。"""
+    """批量归档课件（只转 markdown，不做检索切块）。"""
     if not file_paths:
         return Result.fail("未选择文件", "请先选择课件文件")
 
@@ -124,14 +128,14 @@ def import_courseware(file_paths: list[Path], course: str) -> Result[list[FileIm
 # =================== Word 版教材生成 ====================
 
 def generate_all_docx() -> Result[list[str]]:
-    """为所有已入库教材生成 Word 版（供学生批注）。"""
+    """为所有已有教材生成 Word 版（供学生批注）。"""
     try:
         outs = study.generate_all_docx_textbooks()
     except Exception as e:
         return Result.fail(str(e), "❌ 生成 Word 教材失败")
     names = [o.name for o in outs]
     if not names:
-        return Result.ok(names, "（无教材可生成；请先在「教材导入」入库）")
+        return Result.ok(names, "（无教材可生成；请先在「教材导入」导入教材）")
     return Result.ok(names, f"✅ 已生成 {len(names)} 个 Word 教材")
 
 

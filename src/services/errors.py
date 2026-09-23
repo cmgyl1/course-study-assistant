@@ -11,11 +11,7 @@ class AppError(Exception):
 
 
 class FileImportError(AppError):
-    """文件转换 / 入库失败（PDF 损坏、Markdown 解析异常）。"""
-
-
-class KnowledgeBaseError(AppError):
-    """chromadb 写入 / 检索失败（数据库锁、维度不匹配等）。"""
+    """文件转换 / 写盘失败（PDF 损坏、Markdown 解析异常）。"""
 
 
 class PracticeSessionError(AppError):

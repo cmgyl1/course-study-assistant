@@ -66,10 +66,15 @@ class KnowledgeNode:
 
 @dataclass(frozen=True)
 class ChapterContent:
-    """教材某章节的正文片段（来自 RAG 检索）。"""
+    """教材里的一段原文片段（检索命中的"依据"）。
+
+    page_no 是它在原书里的页码（OCR 合并阶段写入），UI 显示出来便于对照纸质书。
+    """
     section_path: str
     doc_title: str
     content: str
+    page_no: int | None = None
+    score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -99,11 +104,23 @@ class SectionReading:
 
 @dataclass(frozen=True)
 class ExplainResultData:
-    """知识点讲解的合并结果（evidence + AI 答案 + 可用性）。"""
+    """知识点讲解的合并结果（检索依据 + 可选 AI 答案 + 可用性）。
+
+    status 取值：
+      - "ok"         有命中
+      - "not_found"  书里确实没有这个概念 —— UI 必须如实告知，
+                     绝不能因为"总得返回点什么"而展示不相关段落
+      - "empty_query" 提问里提取不出有效关键词
+      - "no_corpus"  该课程还没导入教材
+    """
     query: str
     evidence: list[ChapterContent] = field(default_factory=list)
     answer: str = ""
     ai_available: bool = False
+    status: str = "ok"
+    related_sections: list[str] = field(default_factory=list)
+    missing_tokens: list[str] = field(default_factory=list)
+    message: str = ""
 
 
 # =================== Dashboard / 复习提纲 DTO ====================
